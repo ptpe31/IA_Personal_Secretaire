@@ -391,9 +391,11 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     ) -> None:
         cat_label = "Pro" if task.category == "pro" else "Perso"
         title_classes = (
-            "font-normal text-gray-500 text-sm truncate min-w-0"
+            "font-normal text-gray-500 text-sm truncate min-w-0 "
+            "cursor-pointer hover:underline hover:text-gray-700"
             if is_child
-            else "font-semibold text-gray-900 truncate min-w-0"
+            else "font-semibold text-gray-900 truncate min-w-0 "
+            "cursor-pointer hover:underline hover:text-blue-700"
         )
         title_col = LIST_COL_TITLE + (" pl-4" if is_child else "")
         row_classes = "trankil-list-row px-4 hover:bg-gray-50/60"
@@ -404,6 +406,21 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
         with ui.element("div").classes(f"{LIST_GRID} {row_classes}"):
             with ui.element("div").classes(title_col):
+                if not is_child and task.stored_path:
+
+                    def open_ged_document(t: TaskDTO = task) -> None:
+                        path = config.ROOT_PATH / t.stored_path
+                        try:
+                            open_file(path)
+                        except Exception as exc:
+                            ui.notify(str(exc), type="negative")
+
+                    ui.button(
+                        icon="alternate_email",
+                        on_click=open_ged_document,
+                    ).props("flat round dense size=sm").classes(
+                        ICON_BTN + " shrink-0"
+                    ).tooltip("Ouvrir le document GED")
                 if is_child:
                     ui.icon("subdirectory_arrow_right").classes(
                         "text-gray-300 text-base shrink-0"
@@ -411,7 +428,15 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 ui.label(cat_label).classes(
                     f"{category_badge_classes(task.category)} shrink-0"
                 )
-                ui.label(task.title).classes(title_classes)
+                title_label = ui.label(task.title).classes(title_classes)
+                title_label.on(
+                    "click",
+                    lambda t=task: open_task_edit_dialog(
+                        t,
+                        render_tasks_workspace.refresh,
+                        on_deleted=render_tasks_workspace.refresh,
+                    ),
+                ).tooltip("Modifier")
 
             with ui.element("div").classes(LIST_COL_DEADLINE):
                 with ui.row().classes("items-center gap-2 min-w-0"):
