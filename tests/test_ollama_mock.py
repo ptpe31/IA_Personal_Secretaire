@@ -24,6 +24,23 @@ def test_document_analysis_validates_json():
     assert analysis.date_emission == date(2026, 5, 28)
 
 
+def test_document_analysis_accepts_string_null_from_llm():
+    """Ollama renvoie parfois la chaîne 'null' au lieu de null JSON."""
+    data = {
+        "title": "Maintenance Expo",
+        "date_emission": "2026-05-28",
+        "date_event": "null",
+        "deadline": "null",
+        "category": "pro",
+        "tags": ["Tech"],
+        "confidence": 0.7,
+        "raw_summary": "Capture écran maintenance.",
+    }
+    analysis = DocumentAnalysis.model_validate(data)
+    assert analysis.date_event is None
+    assert analysis.deadline is None
+
+
 def test_mock_client_returns_valid_analysis(tmp_path):
     sample = tmp_path / "expo_screenshot.png"
     sample.write_bytes(b"fake")

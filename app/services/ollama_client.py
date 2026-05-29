@@ -101,6 +101,7 @@ class OllamaClient(AnalysisClient):
             response.raise_for_status()
             content = response.json()["message"]["content"]
             data = self._parse_json_content(content)
+            data = self._sanitize_llm_payload(data)
             return DocumentAnalysis.model_validate(data)
         except Exception as exc:
             logger.error("Échec analyse Ollama pour %s : %s", file_path.name, exc)
@@ -116,6 +117,23 @@ class OllamaClient(AnalysisClient):
             if not match:
                 raise ValueError("Réponse Ollama sans JSON valide") from None
             return json.loads(match.group())
+
+    @staticmethod
+    def _sanitize_llm_payload(data: dict) -> dict:
+        """Corrige les artefacts JSON fréquents des modèles locaux."""
+        cleaned = dict(data)
+        for key in ("date_event", "deadline", "date_emission"):
+            value = cleaned.get(key)
+            if isinstance(value, str) and value.strip().lower() in (
+                "null",
+                "none",
+                "",
+                "n/a",
+            ):
+                cleaned[key] = None
+        if cleaned.get("raw_summary") is None:
+            cleaned["raw_summary"] = ""
+        return cleaned
 
 
 def get_analysis_client() -> AnalysisClient:

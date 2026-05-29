@@ -22,6 +22,14 @@ python main.py                # http://localhost:8080
 
 Ou double-clic sur `start.command`.
 
+### Raccourci Inbox — coller une capture
+
+1. Capture d'écran (⌘⇧4) ou copie d'image depuis Mail
+2. Onglet **Inbox** → cliquer la zone **Coller une capture**
+3. **⌘V** — l'analyse démarre comme pour un glisser-déposer
+
+Les PDF et fichiers restent en **glisser-déposer** (ou bouton Choisir).
+
 ## Structure données
 
 ```

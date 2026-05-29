@@ -1,8 +1,9 @@
-"""Vue Inbox — drag & drop, split-view, formulaire d'analyse."""
+"""Vue Inbox — drag & drop, collage presse-papiers, split-view."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -12,8 +13,9 @@ from nicegui import events, ui
 
 from app.config import INBOX_PATH
 from app.models.analysis import DocumentAnalysis
-from app.services.ollama_client import AnalysisClient, get_analysis_client
 from app.services.calendar_service import try_auto_sync_task
+from app.services.inbox_ingest import extension_from_filename
+from app.services.ollama_client import AnalysisClient, get_analysis_client
 from app.services.task_service import parse_tags_input, validate_inbox_document
 from app.utils.dates import parse_optional_date
 from app.utils.file_preview import is_allowed_extension, preview_data_url, register_heif_support
@@ -39,7 +41,8 @@ def create_inbox_view() -> None:
 
     ui.label("Inbox").classes("text-h5 q-mb-sm")
     ui.label(
-        "Déposez un courrier scanné (PDF), une photo iPhone (HEIC) ou une capture d'écran."
+        "Déposez un fichier, ou collez une capture d'écran (⌘V) après avoir cliqué "
+        "dans la zone de collage."
     ).classes("text-body2 text-grey-7 q-mb-md")
 
     mock_banner = ui.row().classes(
@@ -59,7 +62,19 @@ def create_inbox_view() -> None:
 
     refresh_mock_banner()
 
-    # --- Zone upload ---
+    # --- Zone collage presse-papiers ---
+    with ui.card().classes(
+        "w-full q-mb-sm q-pa-md trankil-paste-zone cursor-pointer"
+    ).props("flat bordered tabindex=0") as paste_zone:
+        with ui.row().classes("items-center q-gutter-sm"):
+            ui.icon("content_paste", size="md").classes("text-primary")
+            with ui.column():
+                ui.label("Coller une capture ou une image").classes("text-subtitle2")
+                ui.label("Cliquez ici, puis ⌘V (Mac) ou Ctrl+V").classes(
+                    "text-caption text-grey-7"
+                )
+
+    # --- Zone upload (drag & drop inchangé) ---
     with ui.card().classes("w-full q-mb-md"):
         ui.label("Glisser-déposer un fichier").classes("text-subtitle1 q-mb-sm")
         upload = ui.upload(
@@ -76,7 +91,7 @@ def create_inbox_view() -> None:
         with ui.card().classes("col-grow").style("min-width: 45%; max-width: 55%"):
             ui.label("Aperçu du document").classes("text-subtitle1 q-mb-sm")
             with preview_container:
-                ui.label("Aucun document — déposez un fichier ci-dessus.").classes(
+                ui.label("Aucun document — déposez ou collez un fichier.").classes(
                     "text-grey-6 q-pa-lg text-center w-full"
                 )
 
@@ -85,7 +100,6 @@ def create_inbox_view() -> None:
             with form_container:
                 ui.label("Les champs apparaîtront après l'analyse.").classes("text-grey-6")
 
-    # Références formulaire (remplies dynamiquement)
     form_refs: dict[str, object] = {}
 
     def clear_form() -> None:
@@ -176,10 +190,13 @@ def create_inbox_view() -> None:
                     state.analysis = None
                     ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
                     if try_auto_sync_task(task_id):
-                        ui.notify("Synchronisé automatiquement avec Google Calendar.", type="positive")
+                        ui.notify(
+                            "Synchronisé automatiquement avec Google Calendar.",
+                            type="positive",
+                        )
                     preview_container.clear()
                     with preview_container:
-                        ui.label("Document classé. Déposez un nouveau fichier.").classes(
+                        ui.label("Document classé. Déposez ou collez un nouveau fichier.").classes(
                             "text-positive q-pa-lg text-center w-full"
                         )
                     form_container.clear()
@@ -195,30 +212,14 @@ def create_inbox_view() -> None:
                 on_click=handle_validate,
             ).props("color=primary unelevated").classes("w-full")
 
-    async def process_upload(e: events.UploadEventArguments) -> None:
-        filename = e.file.name or "document"
-        suffix = Path(filename).suffix.lower()
-
-        if suffix and not is_allowed_extension(Path(filename)):
-            ui.notify(f"Format non supporté : {suffix}", type="negative")
-            return
-
-        inbox_name = f"{uuid.uuid4().hex}_{Path(filename).name}"
-        dest = INBOX_PATH / inbox_name
-        INBOX_PATH.mkdir(parents=True, exist_ok=True)
-
-        try:
-            await e.file.save(dest)
-        except Exception as exc:
-            logger.exception("Erreur sauvegarde inbox")
-            ui.notify(f"Erreur lors de la sauvegarde : {exc}", type="negative")
-            return
-
+    async def ingest_inbox_file(dest: Path, filename: str, *, source: str = "upload") -> None:
+        """Pipeline commun : preview → analyse Ollama → formulaire."""
         state.file_path = dest
         clear_form()
         render_preview(dest)
 
-        ui.notify(f"Analyse de « {filename} » en cours…", type="ongoing")
+        label = "Collage" if source == "paste" else "Import"
+        ui.notify(f"{label} de « {filename} » — analyse en cours…", type="ongoing")
 
         try:
             analysis = await asyncio.to_thread(state.client.analyze_document, dest)
@@ -236,9 +237,90 @@ def create_inbox_view() -> None:
         render_form(analysis)
         ui.notify("Analyse terminée.", type="positive")
 
+    async def process_upload(e: events.UploadEventArguments) -> None:
+        filename = e.file.name or "document"
+        suffix = extension_from_filename(filename)
+
+        if suffix and not is_allowed_extension(Path(filename)):
+            ui.notify(f"Format non supporté : {suffix}", type="negative")
+            return
+
+        inbox_name = f"{uuid.uuid4().hex}_{Path(filename).name}"
+        dest = INBOX_PATH / inbox_name
+        INBOX_PATH.mkdir(parents=True, exist_ok=True)
+
+        try:
+            await e.file.save(dest)
+        except Exception as exc:
+            logger.exception("Erreur sauvegarde inbox")
+            ui.notify(f"Erreur lors de la sauvegarde : {exc}", type="negative")
+            return
+
+        source = "paste" if filename.startswith("paste_") else "upload"
+        await ingest_inbox_file(dest, filename, source=source)
+
     upload.on_upload(process_upload)
 
-    # Rafraîchir le client au chargement (au cas où Ollama démarre après l'app)
+    def activate_paste_zone() -> None:
+        ui.run_javascript("window.__trankilPasteActive = true")
+
+    def deactivate_paste_zone() -> None:
+        ui.run_javascript("window.__trankilPasteActive = false")
+
+    paste_zone.on("click", activate_paste_zone)
+    paste_zone.on("focus", activate_paste_zone)
+    paste_zone.on("focusin", activate_paste_zone)
+    paste_zone.on("focusout", deactivate_paste_zone)
+
+    async def setup_clipboard_paste() -> None:
+        upload_url = upload._props["url"]
+        await ui.run_javascript(
+            f"""
+            (function() {{
+                if (window.__trankilPasteSetup) return;
+                window.__trankilPasteSetup = true;
+                window.__trankilUploadUrl = {json.dumps(upload_url)};
+                window.__trankilPasteActive = false;
+
+                document.addEventListener('paste', async (event) => {{
+                    if (!window.__trankilPasteActive) return;
+                    const items = event.clipboardData?.items;
+                    if (!items) return;
+
+                    for (const item of items) {{
+                        if (!item.type.startsWith('image/')) continue;
+                        event.preventDefault();
+
+                        const blob = item.getAsFile();
+                        if (!blob) continue;
+
+                        const ext = item.type === 'image/jpeg' ? 'jpg'
+                            : item.type === 'image/png' ? 'png'
+                            : item.type === 'image/webp' ? 'webp'
+                            : 'png';
+                        const form = new FormData();
+                        form.append('file', blob, `paste_${{Date.now()}}.${{ext}}`);
+
+                        try {{
+                            const response = await fetch(window.__trankilUploadUrl, {{
+                                method: 'POST',
+                                body: form,
+                            }});
+                            if (!response.ok) {{
+                                console.error('Trankil paste upload failed', response.status);
+                            }}
+                        }} catch (error) {{
+                            console.error('Trankil paste error', error);
+                        }}
+                        break;
+                    }}
+                }});
+            }})();
+            """
+        )
+
+    ui.timer(0.2, setup_clipboard_paste, once=True)
+
     async def check_ollama_later() -> None:
         await asyncio.sleep(2)
         state.client = get_analysis_client()
