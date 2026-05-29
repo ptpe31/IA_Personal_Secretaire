@@ -116,6 +116,12 @@ body, .nicegui-content {
 .trankil-list-row {
     transition: background-color 0.15s ease;
 }
+.trankil-list-batch {
+    transition: box-shadow 0.15s ease;
+}
+.trankil-list-batch:hover {
+    box-shadow: 0 2px 8px rgba(60, 64, 67, 0.08);
+}
 """
 
 # Quasar utility bundles + Tailwind (NiceGUI tailwind=True)

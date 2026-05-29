@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.8-implemented  
+> **Version** : 0.9-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — Dashboard bi-mode (Kanban / Liste), relances email J-1, cartes pastel par lot, multi-IA  
+> **Statut** : V1 fonctionnelle — Vue Liste « wide layout » (grille 12 col.), Kanban, relances email J-1, cartes pastel par lot  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -513,25 +513,47 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 
 ### 5.8 Vue bi-mode — Kanban & Liste
 
-Sélecteur discret sous les chips (`ui.state('kanban')` dans `dashboard_view.py`) :
+Sélecteur discret sous les chips (`vue_mode, set_vue_mode = ui.state('kanban')` dans `dashboard_view.py`) :
 
 | Mode | Icône | Usage |
 |------|-------|-------|
 | **Kanban** (défaut) | `view_kanban` | Visualisation flux, urgence, colonnes |
-| **Liste** | `list` | Haute densité — 20–30 tâches visibles sans scroll horizontal |
+| **Liste** | `list` | Grille haute densité — scan vertical type gestion de projet |
 
-**Vue Liste** (`sort_list_view_tasks()` dans `dates.py`) :
+#### 5.8.1 Vue Liste — « Wide Layout » (grille 12 colonnes)
 
-| Colonne | Contenu |
-|---------|---------|
-| Bordure gauche | Couleur lot (`document_id % 6`) — `batch_border_left_classes()` |
-| Titre | Gras ; tâches « enfants » du même lot : indentation `ml-12`, icône `subdirectory_arrow_right`, texte réduit |
-| Catégorie | Badge Pro / Perso |
-| Échéance | Pilule date |
-| Suggestion | Texte tronqué |
-| Actions | Checkbox « Fait » + suppression |
+Regroupement par **lots** (même `document_id` ou création manuelle) via `_group_tasks_into_batches()` · tri `sort_list_view_tasks()`.
 
-Tri : lots regroupés, échéances proches en haut (cohérent avec le Kanban). Tâches archivées visibles uniquement en mode Kanban (colonne ARCHIVÉ).
+**En-tête fixe** aligné sur la grille (`gap-x-4`, `items-center`) :
+
+| Colonnes | Libellé | Contenu |
+|----------|---------|---------|
+| **1–6** | Tâche | Badge Pro/Perso + titre (gras) ; enfants : flèche `subdirectory_arrow_right`, indentation `pl-4`, `text-sm text-gray-500` |
+| **7–8** | Deadline | Icône `alarm` + date (`format_date_fr`) ou `—` |
+| **9–10** | Événement | Icône `calendar_today` + `date_event` ou `—` |
+| **11** | Conseil IA | Icône `lightbulb` + texte tronqué (`truncate`, tooltip au survol) ou `—` |
+| **12** | *(actions)* | Checkbox « Fait » + suppression |
+
+**Blocs lot** (`render_list_batch_block`) :
+
+```
+┌─ border-l-4 (couleur lot) ─────────────────────────────────────────┐
+│  [Pro] Tâche mère (bg-white, py-3)     │ ⏰ │ 📅 │ 💡 │ ☐ 🗑      │
+├────────────────────────────────────────┼────┼────┼────┼───────────┤
+│    ↳ Enfant 1 (bg-gray-50/50, py-2)    │ …  │ …  │ …  │ ☐ 🗑      │
+└────────────────────────────────────────┴────┴────┴────┴───────────┘
+```
+
+| Élément | Style |
+|---------|-------|
+| Conteneur lot | `bg-white rounded-xl border border-gray-200 mb-6` + `batch_border_left_classes()` |
+| Tâche mère | Fond blanc, `py-3` |
+| Tâches enfants | Fond `bg-gray-50/50`, séparateur `border-t border-gray-100`, `py-2` compact |
+| Dates | `text-xs text-gray-400`, icônes espacées (`gap-2`) |
+
+**Actions lot** (tâche mère, lot ≥ 2 tâches) : bouton `delete_sweep` → dialogue « Supprimer tout le lot » → `delete_tasks()` (transaction SQLite).
+
+Tri : lots regroupés, échéances proches en haut. Tâches archivées visibles uniquement en mode Kanban (colonne ARCHIVÉ).
 
 ### 5.9 Colonnes Kanban
 
@@ -589,7 +611,7 @@ Module central : `app/ui/google_theme.py` — palette Google Clean & Bright, inj
 | **Navigation** | Onglets pill-shaped (pilules arrondies, indicateur masqué) |
 | **Filtres catégorie** | Chips `Tout / Pro / Perso` (noir, bleu, vert selon actif) |
 | **Cartes tâche** | Pastel Google Keep par lot + ombre légère ; urgent = bordure rouge gauche |
-| **Vue Liste** | Lignes blanches, bordure lot `border-l-4`, hover gris clair |
+| **Vue Liste** | Grille 12 col. wide layout · blocs lot `border-l-4` · colonnes Deadline / Événement / Conseil IA alignées |
 | **Toggle vue** | Boutons pill `trankil-view-toggle` |
 | **Métadonnées dates** | Icône grise + pilule grise (`trankil-date-pill`) |
 | **Suggestion IA** | Encart ambre avec icône ampoule |
@@ -1032,8 +1054,8 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Cartes Kanban : affichage **date événement**
 - [x] **Tri chronologique Kanban** : urgent (deadline ASC) + à faire (proche en haut, sans date en bas)
 - [x] **Thème Google Workspace** (`google_theme.py`) — header blanc, chips, cartes pastel par lot
-- [x] **Vue Liste haute densité** + sélecteur Kanban / Liste
-- [x] Ouverture GED (@) depuis les cartes Dashboard
+- [x] **Vue Liste wide layout** — grille 12 col., blocs lot, suppression groupée (`delete_tasks`)
+- [x] Ouverture GED (@) depuis les cartes Kanban
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -1068,7 +1090,8 @@ IA_Personal_Secretaire/          # dépôt git
 | **Fallback IA** | Gemini → **Ollama** local → **Mock** démo |
 | **raw_summary** | **Stocké en base**, indexé pour recherche GED |
 | **Suggestion IA** | Champ `suggestion` affiché sur cartes Dashboard (💡) |
-| **Dashboard** | **Bi-mode** : Kanban (défaut) + **Vue Liste** haute densité |
+| **Dashboard** | **Bi-mode** : Kanban (défaut) + **Vue Liste** (grille 12 col., blocs lot) |
+| **Suppression lot** | Vue Liste : `delete_sweep` sur tâche mère → `delete_tasks()` |
 | **Relances** | macOS J-3/J-1 + **email J-1** (Gmail SMTP, 1 mail/jour regroupé) |
 | **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 + email J-1 |
 | **Google Calendar** | **OFF par défaut**, bouton manuel ; procédure README |
@@ -1111,7 +1134,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Recherche GED (titre + raw_summary + tags).
 - [x] Notifications J-3 et J-1 sur Mac (app ouverte).
 - [x] Relance email J-1 (Gmail, mot de passe d'application).
-- [x] Vue Liste Dashboard + cartes pastel par lot document.
+- [x] Vue Liste Dashboard — grille wide layout (Deadline, Événement, Conseil IA, suppression lot).
 - [x] Sync Google Calendar manuelle + option auto (OFF par défaut).
 - [x] Toggle Autopilote dans Paramètres.
 - [x] Purge SQLite depuis Paramètres (données métier uniquement).
@@ -1162,4 +1185,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard **bi-mode** (Kanban / Liste), cartes pastel par lot, relances macOS + **email J-1**, Autopilote, routines récurrentes, LaunchAgent, purge SQLite, isolation tests SQLite et **89+ tests** pytest. Prochaine étape recommandée : finaliser le README.
+**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard **bi-mode** (Kanban + **Vue Liste wide layout**), cartes pastel par lot, relances macOS + **email J-1**, Autopilote, routines récurrentes, LaunchAgent, purge SQLite, isolation tests SQLite et **89+ tests** pytest. Prochaine étape recommandée : finaliser le README.

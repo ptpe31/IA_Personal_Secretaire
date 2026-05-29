@@ -520,13 +520,26 @@ def unarchive_task(task_id: int) -> None:
 
 def delete_task(task_id: int) -> None:
     """Supprime définitivement une tâche de la base (tags et notifications associés inclus)."""
+    delete_tasks([task_id])
+
+
+def delete_tasks(task_ids: list[int]) -> int:
+    """Supprime définitivement plusieurs tâches en une transaction."""
+    if not task_ids:
+        return 0
     conn = get_connection()
     try:
-        cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cursor.rowcount == 0:
-            raise ValueError(f"Tâche {task_id} introuvable.")
+        placeholders = ",".join("?" * len(task_ids))
+        cursor = conn.execute(
+            f"DELETE FROM tasks WHERE id IN ({placeholders})",
+            task_ids,
+        )
+        deleted = int(cursor.rowcount)
+        if deleted == 0:
+            raise ValueError("Aucune tâche supprimée.")
         conn.commit()
-        logger.info("Tâche %s supprimée", task_id)
+        logger.info("%s tâche(s) supprimée(s)", deleted)
+        return deleted
     except Exception:
         conn.rollback()
         raise

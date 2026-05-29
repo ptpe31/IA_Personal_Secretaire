@@ -14,6 +14,7 @@ from app.services.analysis_client import describe_analysis_engine
 from app.services.task_service import (
     archive_task,
     delete_task,
+    delete_tasks,
     list_tasks,
     refresh_task_statuses,
 )
@@ -52,6 +53,15 @@ from app.utils.finder import open_file
 from app.utils.recurrence import RECURRENCE_DISPLAY
 
 logger = logging.getLogger(__name__)
+
+LIST_GRID = "grid grid-cols-12 gap-x-4 w-full items-center"
+LIST_COL_TITLE = "col-span-6 flex items-center gap-2 min-w-0"
+LIST_COL_DEADLINE = "col-span-2 flex items-center gap-2 min-w-0"
+LIST_COL_EVENT = "col-span-2 flex items-center gap-2 min-w-0"
+LIST_COL_SUGGESTION = "col-span-1 flex items-center gap-2 min-w-0 overflow-hidden"
+LIST_COL_ACTIONS = "col-span-1 flex items-center justify-end gap-0.5 shrink-0"
+LIST_DATE_TEXT = "text-xs text-gray-400 whitespace-nowrap"
+LIST_ICON_MUTED = "text-gray-400 shrink-0"
 
 CATEGORY_OPTIONS = {
     "all": "Tout",
@@ -211,6 +221,43 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
         dialog.open()
 
+    def confirm_delete_batch(batch: list[TaskDTO]) -> None:
+        count = len(batch)
+        if count == 0:
+            return
+        parent_title = batch[0].title
+        with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
+            ui.label("Supprimer tout le lot ?").classes("text-subtitle1 q-mb-xs")
+            if count == 1:
+                ui.label(parent_title).classes("text-body2 q-mb-sm")
+            else:
+                ui.label(parent_title).classes("text-body2 text-weight-medium q-mb-xs")
+                ui.label(
+                    f"Et {count - 1} autre(s) tâche(s) liée(s) au même document."
+                ).classes("text-body2 q-mb-sm")
+            ui.label(
+                "Suppression définitive de la base. Le fichier GED n'est pas effacé."
+            ).classes("text-caption text-grey-7 q-mb-md")
+            with ui.row().classes("justify-end q-gutter-sm w-full"):
+                ui.button("Annuler", on_click=dialog.close).props("flat")
+
+                def do_delete(b: list[TaskDTO] = batch) -> None:
+                    deleted = delete_tasks([t.id for t in b])
+                    dialog.close()
+                    ui.notify(
+                        f"{deleted} tâche(s) supprimée(s).",
+                        type="positive",
+                    )
+                    render_tasks_workspace.refresh()
+
+                ui.button(
+                    f"Supprimer le lot ({count})",
+                    icon="delete_sweep",
+                    on_click=do_delete,
+                ).props("color=negative unelevated")
+
+        dialog.open()
+
     def render_task_card(task: TaskDTO, column: str) -> None:
         cat_label = "Pro" if task.category == "pro" else "Perso"
         urgent = column == "urgent"
@@ -319,61 +366,151 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 if column != "archived":
                     add_calendar_sync_button(task, on_synced=render_tasks_workspace.refresh)
 
-    def render_list_row(task: TaskDTO, *, is_child: bool) -> None:
-        cat_label = "Pro" if task.category == "pro" else "Perso"
-        border_cls = batch_border_left_classes(task.document_id, task.created_at)
-        row_classes = (
-            "trankil-list-row w-full items-center p-3 bg-white border-b border-gray-100 "
-            "hover:bg-gray-50 gap-3 flex-nowrap"
-        )
-        if is_child:
-            row_classes += " ml-12"
-
-        title_classes = (
-            "text-xs text-grey-7 col"
-            if is_child
-            else "text-sm font-medium text-grey-9 col"
-        )
-
-        with ui.row().classes(f"{row_classes} {border_cls}"):
-            if is_child:
-                ui.icon("subdirectory_arrow_right").classes("text-gray-300 shrink-0")
-
-            ui.label(cat_label).classes(category_badge_classes(task.category))
-
-            ui.label(task.title).classes(title_classes)
-
-            ui.label(format_date_fr(task.deadline)).classes(
-                "text-caption text-grey-7 shrink-0 trankil-date-pill"
-            )
-
-            if task.suggestion:
-                ui.label(task.suggestion).classes(
-                    "text-caption text-grey-6 col-grow ellipsis"
-                ).style("max-width: 280px")
+    def _group_tasks_into_batches(tasks: list[TaskDTO]) -> list[list[TaskDTO]]:
+        batches: list[list[TaskDTO]] = []
+        current_key: tuple | None = None
+        current_batch: list[TaskDTO] = []
+        for task in tasks:
+            key = kanban_batch_sort_key(task)
+            if key != current_key:
+                if current_batch:
+                    batches.append(current_batch)
+                current_batch = [task]
+                current_key = key
             else:
-                ui.element("div").classes("col-grow")
+                current_batch.append(task)
+        if current_batch:
+            batches.append(current_batch)
+        return batches
 
-            def mark_done(e, tid: int = task.id) -> None:
-                if e.value:
-                    spawned_id = archive_task(tid)
-                    if spawned_id:
-                        ui.notify(
-                            "Tâche archivée — prochaine occurrence planifiée.",
-                            type="positive",
+    def render_list_grid_row(
+        task: TaskDTO,
+        *,
+        is_child: bool,
+        batch: list[TaskDTO] | None = None,
+    ) -> None:
+        cat_label = "Pro" if task.category == "pro" else "Perso"
+        title_classes = (
+            "font-normal text-gray-500 text-sm truncate min-w-0"
+            if is_child
+            else "font-semibold text-gray-900 truncate min-w-0"
+        )
+        title_col = LIST_COL_TITLE + (" pl-4" if is_child else "")
+        row_classes = "trankil-list-row px-4 hover:bg-gray-50/60"
+        if is_child:
+            row_classes += " py-2 border-t border-gray-100 bg-gray-50/50"
+        else:
+            row_classes += " py-3 bg-white"
+
+        with ui.element("div").classes(f"{LIST_GRID} {row_classes}"):
+            with ui.element("div").classes(title_col):
+                if is_child:
+                    ui.icon("subdirectory_arrow_right").classes(
+                        "text-gray-300 text-base shrink-0"
+                    )
+                ui.label(cat_label).classes(
+                    f"{category_badge_classes(task.category)} shrink-0"
+                )
+                ui.label(task.title).classes(title_classes)
+
+            with ui.element("div").classes(LIST_COL_DEADLINE):
+                with ui.row().classes("items-center gap-2 min-w-0"):
+                    ui.icon("alarm", size="xs").classes(LIST_ICON_MUTED)
+                    ui.label(format_date_fr(task.deadline)).classes(LIST_DATE_TEXT)
+
+            with ui.element("div").classes(LIST_COL_EVENT):
+                with ui.row().classes("items-center gap-2 min-w-0"):
+                    ui.icon("calendar_today", size="xs").classes(LIST_ICON_MUTED)
+                    ui.label(format_date_fr(task.date_event)).classes(LIST_DATE_TEXT)
+
+            with ui.element("div").classes(LIST_COL_SUGGESTION):
+                if task.suggestion:
+                    with ui.row().classes("items-center gap-2 min-w-0 overflow-hidden"):
+                        ui.icon("lightbulb", size="xs").classes(
+                            "text-amber-7 shrink-0"
                         )
-                    else:
-                        ui.notify("Tâche archivée.", type="positive")
-                    render_tasks_workspace.refresh()
+                        suggestion_label = ui.label(task.suggestion).classes(
+                            f"{LIST_DATE_TEXT} truncate min-w-0"
+                        )
+                        suggestion_label.tooltip(task.suggestion)
+                else:
+                    ui.label("—").classes(LIST_DATE_TEXT)
 
-            ui.checkbox(on_change=mark_done).props("color=green-7 dense").tooltip("Fait")
+            with ui.element("div").classes(LIST_COL_ACTIONS):
 
-            ui.button(
-                icon="delete",
-                on_click=lambda t=task: confirm_delete_task(t),
-            ).props("flat round dense size=sm").classes(ICON_BTN_DANGER).tooltip(
-                "Supprimer"
-            )
+                def mark_done(e, tid: int = task.id) -> None:
+                    if e.value:
+                        spawned_id = archive_task(tid)
+                        if spawned_id:
+                            ui.notify(
+                                "Tâche archivée — prochaine occurrence planifiée.",
+                                type="positive",
+                            )
+                        else:
+                            ui.notify("Tâche archivée.", type="positive")
+                        render_tasks_workspace.refresh()
+
+                ui.checkbox(on_change=mark_done).props("color=green-7 dense").tooltip(
+                    "Fait"
+                )
+                if not is_child and batch and len(batch) > 1:
+                    ui.button(
+                        icon="delete_sweep",
+                        on_click=lambda b=batch: confirm_delete_batch(b),
+                    ).props("flat round dense size=sm").classes(
+                        ICON_BTN_DANGER
+                    ).tooltip("Supprimer tout le lot")
+                ui.button(
+                    icon="delete",
+                    on_click=lambda t=task: confirm_delete_task(t),
+                ).props("flat round dense size=sm").classes(ICON_BTN_DANGER).tooltip(
+                    "Supprimer"
+                )
+
+    def render_list_batch_block(batch: list[TaskDTO]) -> None:
+        if not batch:
+            return
+        parent = batch[0]
+        children = batch[1:]
+        border_cls = batch_border_left_classes(parent.document_id, parent.created_at)
+
+        with ui.column().classes(
+            f"trankil-list-batch w-full bg-white rounded-xl border "
+            f"border-gray-200 mb-6 overflow-hidden {border_cls}"
+        ):
+            render_list_grid_row(parent, is_child=False, batch=batch)
+            for child in children:
+                render_list_grid_row(child, is_child=True)
+
+    def render_list_header() -> None:
+        with ui.element("div").classes(
+            f"{LIST_GRID} px-4 py-3 bg-white rounded-t-xl border border-gray-200 "
+            "border-b-0 text-xs font-medium text-gray-500 uppercase tracking-wide"
+        ):
+            ui.label("Tâche").classes(LIST_COL_TITLE)
+            ui.label("Deadline").classes(LIST_COL_DEADLINE)
+            ui.label("Événement").classes(LIST_COL_EVENT)
+            ui.label("Conseil IA").classes(LIST_COL_SUGGESTION)
+            ui.label("").classes(LIST_COL_ACTIONS)
+
+    def render_list_view(buckets: dict[str, list[TaskDTO]]) -> None:
+        active_tasks = (
+            buckets["urgent"] + buckets["todo"] + buckets["todo_no_date"]
+        )
+        sorted_tasks = sort_list_view_tasks(active_tasks)
+        batches = _group_tasks_into_batches(sorted_tasks)
+
+        if not batches:
+            with ui.column().classes(
+                "w-full bg-white rounded-xl border border-gray-200 p-6"
+            ):
+                ui.label("Aucune tâche active").classes("text-grey-5 text-caption")
+            return
+
+        render_list_header()
+        with ui.column().classes("w-full"):
+            for batch in batches:
+                render_list_batch_block(batch)
 
     def _load_task_buckets() -> dict[str, list[TaskDTO]]:
         refresh_task_statuses()
@@ -444,42 +581,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         else:
                             for task in items:
                                 render_task_card(task, col_key)
-
-    def render_list_view(buckets: dict[str, list[TaskDTO]]) -> None:
-        active_tasks = (
-            buckets["urgent"] + buckets["todo"] + buckets["todo_no_date"]
-        )
-        sorted_tasks = sort_list_view_tasks(active_tasks)
-        batch_counts: dict[tuple, int] = {}
-
-        with ui.column().classes("w-full bg-white rounded-borders").style(
-            "border: 1px solid #e5e7eb;"
-        ):
-            with ui.row().classes(
-                "w-full items-center p-3 bg-gray-50 border-b border-gray-200 "
-                "text-caption text-grey-7 font-medium gap-3"
-            ):
-                ui.element("div").classes("w-2 shrink-0")
-                ui.label("Cat.").classes("shrink-0")
-                ui.label("Titre").classes("col")
-                ui.label("Échéance").classes("shrink-0")
-                ui.label("Suggestion").classes("col-grow").style("max-width: 280px")
-                ui.label("Actions").classes("shrink-0 text-right").style(
-                    "min-width: 72px"
-                )
-
-            if not sorted_tasks:
-                ui.label("Aucune tâche active").classes(
-                    "text-grey-5 text-caption q-pa-md"
-                )
-                return
-
-            for task in sorted_tasks:
-                batch_key = kanban_batch_sort_key(task)
-                seen = batch_counts.get(batch_key, 0)
-                is_child = seen > 0
-                batch_counts[batch_key] = seen + 1
-                render_list_row(task, is_child=is_child)
 
     @ui.refreshable
     def render_tasks_workspace() -> None:
