@@ -21,4 +21,6 @@ class TaskDTO:
     notes: str | None
     stored_path: str | None
     original_filename: str | None
+    calendar_synced: bool = False
+    calendar_event_id: str | None = None
     tags: list[str] = field(default_factory=list)

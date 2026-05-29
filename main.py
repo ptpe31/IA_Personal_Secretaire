@@ -9,9 +9,11 @@ import sys
 from nicegui import ui
 
 from app.config import APP_PORT, APP_TITLE, initialize_app_data
+from app.services.notification_scheduler import start_notification_scheduler
 from app.ui.dashboard_view import create_dashboard_view
 from app.ui.ged_view import create_ged_view
 from app.ui.inbox_view import create_inbox_view
+from app.ui.settings_view import create_settings_view
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +40,7 @@ def create_shell() -> None:
             inbox_tab = ui.tab("Inbox", icon="inbox")
             dashboard_tab = ui.tab("Tableau de bord", icon="dashboard")
             ged_tab = ui.tab("Archives", icon="folder")
+            settings_tab = ui.tab("Paramètres", icon="settings")
 
         with ui.tab_panels(tabs, value=inbox_tab).classes("w-full"):
             with ui.tab_panel(inbox_tab):
@@ -49,11 +52,15 @@ def create_shell() -> None:
             with ui.tab_panel(ged_tab):
                 create_ged_view()
 
+            with ui.tab_panel(settings_tab):
+                create_settings_view()
+
 
 def main() -> None:
     """Initialise données, DB et lance NiceGUI."""
     try:
         initialize_app_data()
+        start_notification_scheduler()
         logger.info("Trankil-v2 initialisé — dossiers et base SQLite prêts.")
     except Exception:
         logger.exception("Échec initialisation Trankil-v2")

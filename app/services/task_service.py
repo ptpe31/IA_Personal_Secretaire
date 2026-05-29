@@ -134,6 +134,7 @@ def list_tasks(
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
+            t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
         FROM tasks t
@@ -163,42 +164,88 @@ def list_tasks(
     tag_filters_set = {t.lower() for t in (tag_filters or []) if t}
 
     for row in rows:
-        tags = [t.strip() for t in (row["tag_list"] or "").split(",") if t.strip()]
+        task = _row_to_task(row)
         if tag_filters_set:
-            task_tags_lower = {t.lower() for t in tags}
+            task_tags_lower = {t.lower() for t in task.tags}
             if not task_tags_lower.intersection(tag_filters_set):
                 continue
-
-        tasks.append(
-            TaskDTO(
-                id=int(row["id"]),
-                title=str(row["title"]),
-                category=str(row["category"]),
-                date_emission=date.fromisoformat(str(row["date_emission"])),
-                date_event=(
-                    date.fromisoformat(str(row["date_event"])) if row["date_event"] else None
-                ),
-                deadline=(
-                    date.fromisoformat(str(row["deadline"])) if row["deadline"] else None
-                ),
-                status=str(row["status"]),
-                completed_at=(
-                    datetime.fromisoformat(str(row["completed_at"]))
-                    if row["completed_at"]
-                    else None
-                ),
-                document_id=int(row["document_id"]) if row["document_id"] else None,
-                raw_summary=str(row["raw_summary"]) if row["raw_summary"] else None,
-                notes=str(row["notes"]) if row["notes"] else None,
-                stored_path=str(row["stored_path"]) if row["stored_path"] else None,
-                original_filename=(
-                    str(row["original_filename"]) if row["original_filename"] else None
-                ),
-                tags=tags,
-            )
-        )
+        tasks.append(task)
 
     return tasks
+
+
+def _row_to_task(row) -> TaskDTO:
+    tags = [t.strip() for t in (row["tag_list"] or "").split(",") if t.strip()]
+    return TaskDTO(
+        id=int(row["id"]),
+        title=str(row["title"]),
+        category=str(row["category"]),
+        date_emission=date.fromisoformat(str(row["date_emission"])),
+        date_event=(
+            date.fromisoformat(str(row["date_event"])) if row["date_event"] else None
+        ),
+        deadline=(date.fromisoformat(str(row["deadline"])) if row["deadline"] else None),
+        status=str(row["status"]),
+        completed_at=(
+            datetime.fromisoformat(str(row["completed_at"]))
+            if row["completed_at"]
+            else None
+        ),
+        document_id=int(row["document_id"]) if row["document_id"] else None,
+        raw_summary=str(row["raw_summary"]) if row["raw_summary"] else None,
+        notes=str(row["notes"]) if row["notes"] else None,
+        stored_path=str(row["stored_path"]) if row["stored_path"] else None,
+        original_filename=(
+            str(row["original_filename"]) if row["original_filename"] else None
+        ),
+        calendar_synced=bool(row["calendar_synced"]),
+        calendar_event_id=(
+            str(row["calendar_event_id"]) if row["calendar_event_id"] else None
+        ),
+        tags=tags,
+    )
+
+
+def get_task_by_id(task_id: int) -> TaskDTO | None:
+    query = """
+        SELECT
+            t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
+            t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
+            t.calendar_synced, t.calendar_event_id,
+            d.stored_path, d.original_filename,
+            GROUP_CONCAT(tg.name, ',') AS tag_list
+        FROM tasks t
+        LEFT JOIN documents d ON d.id = t.document_id
+        LEFT JOIN task_tags tt ON tt.task_id = t.id
+        LEFT JOIN tags tg ON tg.id = tt.tag_id
+        WHERE t.id = ?
+        GROUP BY t.id
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(query, (task_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_task(row)
+    finally:
+        conn.close()
+
+
+def mark_calendar_synced(task_id: int, event_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE tasks
+            SET calendar_synced = 1, calendar_event_id = ?,
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+            """,
+            (event_id, task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def list_all_tags() -> list[str]:

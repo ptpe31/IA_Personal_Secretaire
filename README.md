@@ -29,5 +29,26 @@ Ou double-clic sur `start.command`.
 ├── Pro/GED/
 ├── Perso/GED/
 ├── .inbox/
+├── .credentials/google_calendar/
 └── database.sqlite
 ```
+
+## Google Calendar (optionnel)
+
+1. Créez un projet sur [Google Cloud Console](https://console.cloud.google.com/).
+2. Activez l'API **Google Calendar**.
+3. Créez des identifiants **OAuth 2.0 — Application de bureau**.
+4. Téléchargez le JSON et placez-le ici :
+
+```
+~/Trankil-v2/.credentials/google_calendar/credentials.json
+```
+
+5. Dans Trankil-v2 → **Paramètres** → **Connecter Google Calendar** (ouvre le navigateur OAuth).
+6. Utilisez **Synchroniser l'agenda** sur une tâche, ou activez la sync auto dans Paramètres.
+
+## Notifications
+
+- Relances **J-3** et **J-1** via notifications macOS.
+- Actives tant que l'application est ouverte (daemon `launchd` prévu en V1.1).
+- Désactivables dans **Paramètres**.

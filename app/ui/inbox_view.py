@@ -13,6 +13,7 @@ from nicegui import events, ui
 from app.config import INBOX_PATH
 from app.models.analysis import DocumentAnalysis
 from app.services.ollama_client import AnalysisClient, get_analysis_client
+from app.services.calendar_service import try_auto_sync_task
 from app.services.task_service import parse_tags_input, validate_inbox_document
 from app.utils.dates import parse_optional_date
 from app.utils.file_preview import is_allowed_extension, preview_data_url, register_heif_support
@@ -174,6 +175,8 @@ def create_inbox_view() -> None:
                     state.file_path = None
                     state.analysis = None
                     ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
+                    if try_auto_sync_task(task_id):
+                        ui.notify("Synchronisé automatiquement avec Google Calendar.", type="positive")
                     preview_container.clear()
                     with preview_container:
                         ui.label("Document classé. Déposez un nouveau fichier.").classes(

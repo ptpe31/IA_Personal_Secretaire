@@ -6,6 +6,7 @@ from nicegui import ui
 
 from app.models.task import TaskDTO
 from app.services.task_service import archive_task, list_all_tags, list_tasks, refresh_task_statuses
+from app.ui.calendar_button import add_calendar_sync_button
 from app.ui.task_edit_dialog import open_task_edit_dialog
 from app.utils.dates import compute_kanban_column, format_date_fr
 
@@ -127,6 +128,9 @@ def create_dashboard_view() -> None:
                     icon="edit",
                     on_click=lambda t=task: open_task_edit_dialog(t, render_board.refresh),
                 ).props("dense flat round size=sm").tooltip("Modifier")
+
+                if column != "archived":
+                    add_calendar_sync_button(task, on_synced=render_board.refresh)
 
     @ui.refreshable
     def render_board() -> None:
