@@ -118,10 +118,12 @@ class InboxQueueService:
         )
 
     def manual_pending_count(self) -> int:
-        """Documents en attente de validation manuelle (Inbox)."""
-        return sum(
-            1 for job in self.list_jobs() if job.status in (JobStatus.READY, JobStatus.FAILED)
-        )
+        """Documents analysés, en attente de validation manuelle (Inbox)."""
+        return sum(1 for job in self.list_jobs() if job.status == JobStatus.READY)
+
+    def failed_analysis_count(self) -> int:
+        """Documents dont l'analyse IA a échoué."""
+        return sum(1 for job in self.list_jobs() if job.status == JobStatus.FAILED)
 
     def active_processing_job(self) -> InboxJob | None:
         """Premier job en file ou en cours d'analyse."""
@@ -147,6 +149,10 @@ class InboxQueueService:
             except asyncio.QueueEmpty:
                 break
         self._notify()
+
+    def reset_analysis_client(self) -> None:
+        """Force la relecture du moteur IA au prochain document."""
+        self._client = None
 
     async def _worker_loop(self) -> None:
         while True:

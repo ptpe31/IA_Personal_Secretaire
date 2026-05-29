@@ -9,6 +9,7 @@ from nicegui import ui
 
 from app.models.task import TaskDTO
 from app.services.inbox_queue import JobStatus, get_inbox_queue
+from app.services.analysis_client import describe_analysis_engine
 from app.services.task_service import (
     archive_task,
     delete_task,
@@ -77,41 +78,63 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
             return
         with status_container:
             with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
-                ui.spinner("dots", size="lg", color="primary")
+                ui.spinner("line", size="lg", color="primary")
                 if job.status == JobStatus.QUEUED:
                     text = f"En attente — {job.filename}"
                 else:
-                    text = (
-                        f"⚙️ Analyse de {job.filename} "
-                        "par la secrétaire IA en cours..."
-                    )
+                    engine = describe_analysis_engine(queue.client)
+                    text = f"Analyse de {job.filename} par {engine} en cours…"
                 ui.label(text).classes("text-body2")
-            ui.spinner("line", size="lg", color="primary").classes("q-mt-xs")
 
     @ui.refreshable
     def render_manual_banner() -> None:
         manual_banner_container.clear()
-        count = queue.manual_pending_count()
-        if count == 0:
+        if queue.active_processing_job() is not None:
             return
-        doc_label = "document" if count == 1 else "documents"
-        verb = "nécessite" if count == 1 else "nécessitent"
+
+        ready_count = queue.manual_pending_count()
+        failed_count = queue.failed_analysis_count()
+        if ready_count == 0 and failed_count == 0:
+            return
+
         with manual_banner_container:
-            with ui.card().classes("w-full q-pa-sm bg-orange-1"):
-                with ui.row().classes("items-center q-gutter-sm flex-wrap"):
-                    ui.icon("warning", color="orange-10")
-                    ui.label(
-                        f"⚠️ {count} {doc_label} {verb} votre validation manuelle."
-                    ).classes("text-body2")
+            if failed_count > 0:
+                doc_label = "document" if failed_count == 1 else "documents"
+                with ui.card().classes("w-full q-pa-sm bg-red-1"):
+                    with ui.row().classes("items-center q-gutter-sm flex-wrap"):
+                        ui.icon("error", color="negative")
+                        ui.label(
+                            f"❌ L'analyse IA a échoué pour {failed_count} {doc_label}. "
+                            "Vérifiez vos clés API (Paramètres) ou rouvrez l'Inbox."
+                        ).classes("text-body2")
 
-                    def go_inbox() -> None:
-                        if switch_to_inbox:
-                            switch_to_inbox()
+                        def go_inbox_error() -> None:
+                            if switch_to_inbox:
+                                switch_to_inbox()
 
-                    ui.button(
-                        "Cliquez ici pour aller à l'Inbox",
-                        on_click=go_inbox,
-                    ).props("flat dense color=primary no-caps")
+                        ui.button(
+                            "Voir le détail dans l'Inbox",
+                            on_click=go_inbox_error,
+                        ).props("flat dense color=negative no-caps")
+
+            if ready_count > 0:
+                doc_label = "document" if ready_count == 1 else "documents"
+                verb = "nécessite" if ready_count == 1 else "nécessitent"
+                with ui.card().classes("w-full q-pa-sm bg-orange-1"):
+                    with ui.row().classes("items-center q-gutter-sm flex-wrap"):
+                        ui.icon("warning", color="orange-10")
+                        ui.label(
+                            f"⚠️ {ready_count} {doc_label} {verb} votre validation manuelle."
+                        ).classes("text-body2")
+
+                        def go_inbox() -> None:
+                            if switch_to_inbox:
+                                switch_to_inbox()
+
+                        ui.button(
+                            "Cliquez ici pour aller à l'Inbox",
+                            on_click=go_inbox,
+                        ).props("flat dense color=primary no-caps")
 
     @ui.refreshable
     def render_category_filters() -> None:
@@ -175,6 +198,9 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                     ui.badge(f"🔁 {label}").props("color=purple-4").classes("text-caption")
 
             ui.label(f"• Reçu le : {format_date_fr(task.date_emission)}").classes(
+                "text-caption"
+            )
+            ui.label(f"• Date événement : {format_date_fr(task.date_event)}").classes(
                 "text-caption"
             )
             ui.label(f"• Deadline : {format_date_fr(task.deadline)}").classes(
@@ -299,8 +325,11 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
     def on_queue_changed() -> None:
         def _refresh_from_queue() -> None:
-            if queue.active_processing_job():
+            processing = queue.active_processing_job()
+            if processing:
                 deposit_expansion.value = True
+            elif queue.manual_pending_count() == 0 and queue.failed_analysis_count() == 0:
+                deposit_expansion.value = False
             render_processing_status.refresh()
             render_manual_banner.refresh()
             render_board.refresh()

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Signal actif uniquement quand pytest charge ce conftest.
+os.environ["TRANKIL_TEST_MODE"] = "1"
 
 
 @pytest.fixture(autouse=True)
@@ -24,8 +29,6 @@ def isolated_trankil_data(monkeypatch, tmp_path):
     monkeypatch.setattr("app.config.PRO_GED_PATH", pro_ged)
     monkeypatch.setattr("app.config.PERSO_GED_PATH", perso_ged)
     monkeypatch.setattr("app.config.CREDENTIALS_PATH", credentials)
-    monkeypatch.setattr("app.services.ged_service.ROOT_PATH", root)
-    monkeypatch.setattr("app.services.archive_service.ROOT_PATH", root)
 
     from app.db.connection import init_db
 

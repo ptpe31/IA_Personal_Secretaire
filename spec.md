@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.5-implemented  
+> **Version** : 0.6-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — analyse Gemini, fallback Ollama, purge SQLite  
+> **Statut** : V1 fonctionnelle — multi-IA (Gemini / OpenRouter Éco), fallback Ollama, purge SQLite  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -17,7 +17,7 @@
 6. [Vue secondaire — Inbox (validation manuelle)](#6-vue-secondaire--inbox-validation-manuelle)
 7. [Vue 3 — GED / Archives](#7-vue-3--ged--archives)
 8. [Automatisations](#8-automatisations)
-9. [Intégration IA — Gemini, Ollama & mock](#9-intégration-ia--gemini-ollama--mock)
+9. [Intégration IA — Gemini, OpenRouter, Ollama & mock](#9-intégration-ia--gemini-openrouter-ollama--mock)
 10. [Intégration Google Calendar](#10-intégration-google-calendar)
 11. [Arborescence projet](#11-arborescence-projet)
 12. [Plan d'implémentation itérative](#12-plan-dimplémentation-itérative)
@@ -39,7 +39,7 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 | Principe | Description |
 |----------|-------------|
 | **Local-first (données)** | SQLite + filesystem local sous `~/Trankil-v2` ; pas de compte obligatoire. |
-| **Analyse documentaire** | **Gemini API** si clé configurée (multimodal cloud) ; sinon **Ollama** local ; sinon **mock** démo. |
+| **Analyse documentaire** | **Gemini** (natif) ou **OpenRouter / Qwen** (mode Éco) selon Paramètres ; sinon **Ollama** local ; sinon **mock** démo. |
 | **Mac natif** | Notifications macOS, chemin fixe `~/Trankil-v2`. |
 | **Itératif** | MVP testable sans IA (mode mock), enrichissement progressif. |
 | **Français V1** | Interface en français uniquement ; pas d'i18n en V1. |
@@ -52,7 +52,7 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 [Courrier PDF] ──► Scanner ──┐
 [Photo iPhone] ──► HEIC ────┤
 [Mail capture] ──► PNG ─────┤──► Dashboard (dépôt) ──► Analyse IA ──► Kanban + GED
-                             │         (Gemini → Ollama → mock)
+                             │         (OpenRouter → Gemini → Ollama → mock)
                              │                              │
                              │                              └─► (Autopilote OFF ou erreur)
                              │                                       └─► Inbox (validation manuelle)
@@ -77,7 +77,8 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 | Backend | Python (logique métier, scripts, intégrations) |
 | UI | **NiceGUI** (FastAPI + Vue/Quasar) — **validé** |
 | Base de données | **SQLite 3** |
-| IA documentaire (prioritaire) | **Google Gemini** — `gemini-1.5-flash` (configurable) via `google-generativeai` |
+| IA documentaire (natif) | **Google Gemini** — `gemini-2.5-flash` via SDK **`google-genai`** |
+| IA documentaire (Éco) | **OpenRouter** — `qwen/qwen-2.5-vl-72b-instruct` (configurable) |
 | IA documentaire (fallback) | **Ollama** — `llama3.2-vision` (local) |
 | Notifications | `osascript` / AppleScript ou lib Python (`pync`, `desktop-notifier`) |
 | Prérequis système | **Poppler** via Homebrew (`brew install poppler`) pour conversion PDF |
@@ -97,8 +98,8 @@ Streamlit a été écarté : excellent pour la data science, mais inadapté au s
 
 ```
 nicegui>=2.0
-httpx                    # client Ollama (fallback)
-google-generativeai      # client Gemini (analyse prioritaire)
+httpx                    # OpenRouter + Ollama (fallback)
+google-genai             # client Gemini (SDK officiel)
 pydantic>=2.0            # validation JSON IA
 python-dateutil          # parsing dates
 google-api-python-client # Calendar (phase 4)
@@ -109,14 +110,17 @@ pdf2image                # PDF → image (requiert Poppler)
 pypdf                    # métadonnées PDF (optionnel)
 ```
 
-**Configuration Gemini** : fichier `.env` à la racine du dépôt (voir `.env.example`) :
+**Configuration `.env`** (voir `.env.example`) :
 
 ```env
 GEMINI_API_KEY=votre_cle_api_google
-# GEMINI_MODEL=gemini-1.5-pro   # optionnel
+# GEMINI_MODEL=gemini-2.5-flash          # optionnel
+# OPENROUTER_API_KEY=sk-or-...           # mode Éco (ou Paramètres)
+# OPENROUTER_MODEL=qwen/qwen-2.5-vl-72b-instruct
 ```
 
-La clé peut aussi être stockée dans `settings` (`gemini_api_key`). Priorité : variable d'environnement → table SQLite.
+Clés Gemini : variable d'environnement → table SQLite (`gemini_api_key`).  
+Clés OpenRouter : Paramètres UI ou `OPENROUTER_API_KEY` dans `.env`.
 
 ### 2.4 Lancement
 
@@ -254,8 +258,11 @@ Clés settings :
 |-----|--------|-------------|
 | `ollama_model` | `"llama3.2-vision"` | Modèle vision Ollama (fallback) |
 | `ollama_base_url` | `"http://localhost:11434"` | URL Ollama (fallback) |
-| `gemini_model` | `"gemini-1.5-flash"` | Modèle Gemini (`gemini-1.5-pro` possible) |
+| `gemini_model` | `"gemini-2.5-flash"` | Modèle Gemini (legacy settings ; défaut code) |
 | `gemini_api_key` | `""` | Clé API Gemini (alternative au `.env`) |
+| `active_ia_provider` | `"Gemini (Natif)"` | Moteur principal : `Gemini (Natif)` \| `OpenRouter (Éco)` |
+| `openrouter_api_key` | `""` | Clé API OpenRouter (mode Éco) |
+| `openrouter_model` | `"qwen/qwen-2.5-vl-72b-instruct"` | Modèle vision OpenRouter |
 | `autopilot_enabled` | `"true"` | Validation automatique post-analyse |
 | `google_calendar_auto_sync` | `"false"` | Sync Calendar à la validation (**OFF par défaut**) |
 | `notification_enabled` | `"true"` | Relances J-3 / J-1 |
@@ -381,11 +388,12 @@ Migration SQLite : colonnes `recurrence_pattern` et `parent_task_id` ajoutées v
 
 Pendant l'analyse IA (file FIFO), **à l'intérieur du panneau déplié** :
 
-- **Spinner** NiceGUI (`ui.spinner` — dots + line, taille `lg`)
+- **Spinner** NiceGUI (`ui.spinner` line, taille `lg`)
 - Texte d'état :
   - En attente : `En attente — [Nom_du_fichier]`
-  - En cours : `⚙️ Analyse de [Nom_du_fichier] par la secrétaire IA en cours...`
-- À la fin : disparition du spinner + **rafraîchissement instantané** des colonnes Kanban
+  - En cours : `Analyse de [Nom_du_fichier] par [Moteur (modèle)] en cours…` (ex. `OpenRouter (qwen/qwen-2.5-vl-72b-instruct)`, `Gemini (gemini-2.5-flash)`)
+- Blocage double-envoi pendant une analyse en cours
+- À la fin : repli optionnel du panneau + **rafraîchissement instantané** du Kanban
 
 Transitions non bloquantes : analyse en `asyncio.to_thread`, garde-fous client NiceGUI (`inbox_ui_safe.py`).
 
@@ -423,6 +431,7 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 ```
 [Pro] Séance de formation (1/3)              [🔁 Mensuel]
 • Reçu le : 28/05/2026
+• Date événement : 05/11/2026
 • Deadline : 05/11/2026
 💡 Horaires : 14h à 16h
 • Tags : #formation #organisme
@@ -451,7 +460,7 @@ Interactions :
 ### 6.1 Comportement
 
 1. Zone **coller image** + **drag-and-drop** (même module `document_upload.py`, layout vertical).
-2. **File d'analyse asynchrone** : plusieurs documents peuvent être en queue ; traitement Ollama sérialisé en arrière-plan.
+2. **File d'analyse asynchrone** : plusieurs documents peuvent être en queue ; traitement IA sérialisé en arrière-plan (moteur sélectionné dans Paramètres).
 3. Affichage **split-view** pour chaque job prêt :
    - **Gauche** : preview document (image directe ; HEIC converti ; PDF → **page 1 uniquement**).
    - **Droite** : **fiches multi-tâches** éditables (1 document → N tâches).
@@ -612,41 +621,57 @@ Voir §10.
 
 ---
 
-## 9. Intégration IA — Gemini, Ollama & mock
+## 9. Intégration IA — Gemini, OpenRouter, Ollama & mock
 
 ### 9.1 Factory client (`get_analysis_client`)
 
-Ordre de priorité (`app/services/analysis_client.py`) :
+Ordre de priorité (`app/services/analysis_client.py`) selon **`active_ia_provider`** (Paramètres) :
 
 | Priorité | Client | Condition |
 |----------|--------|-----------|
-| 1 | **GeminiClient** | `GEMINI_API_KEY` présente (`.env` ou `settings`) |
-| 2 | **OllamaClient** | Ollama joignable + modèle `llama3.2-vision` installé |
-| 3 | **MockOllamaClient** | Aucune IA disponible |
+| 1 | **OpenRouterClient** | Provider = `OpenRouter (Éco)` **et** clé OpenRouter présente |
+| 2 | **GeminiClient** | `GEMINI_API_KEY` présente (`.env` ou `settings`) |
+| 3 | **OllamaClient** | Ollama joignable + modèle `llama3.2-vision` installé |
+| 4 | **MockOllamaClient** | Aucune IA disponible |
+
+Libellé moteur UI : `describe_analysis_engine(client)` → affiché dans le spinner Dashboard.
 
 Modules partagés :
-- `analysis_prompt.py` — prompt système + few-shot formation multi-tâches (ancrage 2026)
-- `analysis_pipeline.py` — sanitization JSON, validation Pydantic, expansion dates, logs
+- `analysis_prompt.py` — `build_gemini_system_prompt()` (Gemini) · `build_system_prompt()` (OpenRouter / Ollama)
+- `analysis_pipeline.py` — sanitization JSON (titres ≤ 8 mots), validation Pydantic, expansion dates, logs
 
-### 9.2 Configuration Gemini
+### 9.2 Configuration Gemini (natif)
 
 ```yaml
 gemini:
-  api_key: ${GEMINI_API_KEY}   # .env ou settings.gemini_api_key
-  model: gemini-1.5-flash      # ou gemini-1.5-pro via settings / env
+  api_key: ${GEMINI_API_KEY}
+  model: gemini-2.5-flash   # surchargeable via GEMINI_MODEL (.env)
 ```
 
-SDK : `google-generativeai` · JSON strict : `response_mime_type=application/json` + schéma Pydantic `DocumentAnalysisResult` (sanitisé via `gemini_response_schema()` — retrait de `minItems`, etc., incompatibles avec le proto Gemini).
+SDK : **`google-genai`** · `genai.Client` · `temperature=0.0` · JSON strict : `response_mime_type=application/json` + schéma Pydantic `DocumentAnalysisResult`.
 
 ### 9.3 Flux d'analyse Gemini
 
 1. Charger clé API (`config.get_gemini_api_key()`).
 2. Préparer l'image : PDF → page 1 PNG, HEIC → PNG (`load_image_bytes_for_vision`).
-3. Appel multimodal : prompt utilisateur + bytes image (PNG/JPEG/WebP).
-4. Prompt système : `build_system_prompt()` (few-shot séances de formation).
-5. Parser JSON → `finalize_document_analysis()` (expansion, normalisation tags).
+3. Appel multimodal via `client.models.generate_content()` + `types.Part.from_bytes`.
+4. Prompt système : `build_gemini_system_prompt()` (règles anti-monologue, max 8 mots titre).
+5. Parser JSON → `finalize_document_analysis()`.
 
-### 9.4 Configuration Ollama (fallback local)
+### 9.4 Configuration OpenRouter (mode Éco)
+
+Paramètres UI ou `.env` :
+
+```yaml
+openrouter:
+  api_key: ${OPENROUTER_API_KEY}   # ou settings.openrouter_api_key
+  model: qwen/qwen-2.5-vl-72b-instruct
+  endpoint: https://openrouter.ai/api/v1/chat/completions
+```
+
+Flux (`openrouter_client.py`) : `httpx` POST compatible OpenAI Vision · image base64 data-URL · `response_format: json_object` · `temperature=0.0` · headers `Authorization` + `HTTP-Referer` · même pipeline Pydantic que Gemini.
+
+### 9.5 Configuration Ollama (fallback local)
 
 ```yaml
 ollama:
@@ -655,27 +680,22 @@ ollama:
   timeout_seconds: 120
 ```
 
-Flux : image base64 → API `/api/chat` avec `format: json` · même prompt et pipeline post-traitement que Gemini.
+Flux : image base64 → API `/api/chat` avec `format: json` · `build_system_prompt()` · pipeline post-traitement commun.
 
-### 9.5 Prompt système (résumé)
+### 9.6 Prompt système (résumé)
 
-```
-Tu es un assistant secrétaire pour un entrepreneur français.
-Analyse ce document et extrais TOUTES les tâches actionnables distinctes.
-Réponds UNIQUEMENT en JSON valide avec :
-- tasks[] : title, date_emission, date_event, deadline, category, tags,
-  justification_proof, suggestion, confidence
-- document_summary, confidence
-Dates : YYYY-MM-DD. deadline = date officielle du document, sans marge.
-```
+**Gemini** (`build_gemini_system_prompt`) :
+- Titres factuels, **max 8 mots**, interdiction monologue dans le JSON
+- Une tâche par date distincte · ancrage année courante
+- Suggestion logistique ultra-courte
 
-Few-shot complet (4 tâches « séances de formation ») dans `analysis_prompt.py`.
+**OpenRouter / Ollama** (`build_system_prompt`) : même logique, formulation légèrement adaptée au fallback local.
 
-### 9.6 PDF — Page 1 uniquement (V1)
+### 9.7 PDF — Page 1 uniquement (V1)
 
 Conversion page 1 en image (`pdf2image` + **Poppler**) puis envoi au modèle vision.
 
-### 9.7 HEIC — Photos iPhone (V1)
+### 9.8 HEIC — Photos iPhone (V1)
 
 Support natif via **`pillow-heif`** : conversion transparente HEIC → preview + analyse vision.
 
@@ -751,10 +771,11 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── archive_service.py
 │   │   ├── inbox_queue.py       # file FIFO async IA
 │   │   ├── autopilot_service.py # validation automatique
-│   │   ├── analysis_client.py   # factory Gemini → Ollama → mock
-│   │   ├── analysis_prompt.py     # prompt système partagé
+│   │   ├── analysis_client.py   # factory OpenRouter → Gemini → Ollama → mock
+│   │   ├── analysis_prompt.py     # prompts Gemini / OpenRouter / Ollama
 │   │   ├── analysis_pipeline.py   # post-traitement JSON IA
-│   │   ├── gemini_client.py       # client Google Gemini
+│   │   ├── gemini_client.py       # Google Gemini (google-genai)
+│   │   ├── openrouter_client.py   # OpenRouter / Qwen VL (mode Éco)
 │   │   ├── ollama_client.py       # fallback local
 │   │   ├── mock_ollama_client.py
 │   │   ├── task_expansion.py    # ancrage dates relatives
@@ -784,7 +805,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/                       # 62+ tests unitaires (conftest isolation SQLite)
+└── tests/                       # 70+ tests unitaires (conftest isolation SQLite)
 ```
 
 ---
@@ -830,9 +851,12 @@ IA_Personal_Secretaire/          # dépôt git
 
 ### Phase 5 — Polish 🔄
 - [x] Settings UI (Autopilote, sync Calendar, notifications, **purge SQLite**)
+- [x] **Multi-IA** : sélecteur Gemini / OpenRouter (Éco) + clés dans Paramètres
+- [x] Migration SDK **`google-genai`** · modèle `gemini-2.5-flash` · température 0
 - [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
 - [x] Suggestions IA (`suggestion`, `justification_proof`)
 - [x] Tâches manuelles + colonnes récurrence SQLite
+- [x] Cartes Kanban : affichage **date événement**
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -860,8 +884,10 @@ IA_Personal_Secretaire/          # dépôt git
 | **PDF** | **Page 1** uniquement V1 |
 | **Poppler** | Prérequis Homebrew, documenté README |
 | **Lancement** | `python main.py` + **`start.command`** sur le Bureau |
-| **Modèle IA prioritaire** | **Gemini** (`gemini-1.5-flash`) si `GEMINI_API_KEY` configurée |
-| **Fallback IA** | **Ollama** local → **Mock** démo |
+| **Modèle IA natif** | **Gemini** (`gemini-2.5-flash`) via SDK `google-genai` |
+| **Modèle IA Éco** | **OpenRouter** — Qwen VL (`qwen/qwen-2.5-vl-72b-instruct`) |
+| **Sélecteur moteur** | Paramètres → `active_ia_provider` |
+| **Fallback IA** | Gemini → **Ollama** local → **Mock** démo |
 | **raw_summary** | **Stocké en base**, indexé pour recherche GED |
 | **Suggestion IA** | Champ `suggestion` affiché sur cartes Dashboard (💡) |
 | **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 |
@@ -882,7 +908,7 @@ IA_Personal_Secretaire/          # dépôt git
 ### MVP (Phase 0–1) ✅
 
 - [x] Déposer un PNG/PDF/HEIC → champs pré-remplis (Gemini, Ollama ou mock).
-- [x] Analyse IA produit un JSON multi-tâches valide (Gemini JSON strict + Pydantic).
+- [x] Analyse IA produit un JSON multi-tâches valide (Gemini / OpenRouter JSON + Pydantic).
 - [x] Modifier et valider → fichier dans `Pro/GED/` ou `Perso/GED/` avec bon nommage.
 - [x] `raw_summary` persisté et searchable.
 
@@ -935,9 +961,9 @@ python scripts/init_db.py
 python main.py
 # ou double-clic sur start.command
 
-# Configuration Gemini (copier .env.example → .env)
+# Configuration IA (copier .env.example → .env)
 cp .env.example .env
-# Éditer GEMINI_API_KEY=...
+# Éditer GEMINI_API_KEY=... et/ou OPENROUTER_API_KEY=...
 
 # Vérifier Ollama (fallback optionnel)
 python scripts/check_ollama.py
@@ -949,4 +975,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec analyse **Gemini** prioritaire, fallback Ollama, Dashboard escamotable, Autopilote, routines récurrentes, purge SQLite et tests isolés. Prochaine étape recommandée : finaliser le README et migrer vers `google.genai` (SDK successor).
+**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard escamotable 3 colonnes, Autopilote, routines récurrentes, purge SQLite, isolation tests SQLite et **70+ tests** pytest. Prochaine étape recommandée : finaliser le README.

@@ -3,22 +3,42 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.config import DB_PATH, ensure_directories
+from app import config
 from app.db.migrations import apply_schema_migrations
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_PRODUCTION_DB_PATH = Path.home() / "Trankil-v2" / "database.sqlite"
+
+
+def _guard_production_db_in_tests() -> None:
+    """Empêche pytest d'écrire dans ~/Trankil-v2 si l'isolation échoue."""
+    if os.environ.get("TRANKIL_TEST_MODE") != "1":
+        return
+    try:
+        target = Path(config.DB_PATH).resolve()
+        production = _PRODUCTION_DB_PATH.resolve()
+    except OSError:
+        target = Path(config.DB_PATH)
+        production = _PRODUCTION_DB_PATH
+    if target == production:
+        raise RuntimeError(
+            "Refus d'écrire dans ~/Trankil-v2/database.sqlite pendant les tests. "
+            "Vérifiez tests/conftest.py (isolation SQLite)."
+        )
 
 
 def get_connection() -> sqlite3.Connection:
     """Ouvre une connexion SQLite vers ~/Trankil-v2/database.sqlite."""
-    ensure_directories()
-    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+    _guard_production_db_in_tests()
+    config.ensure_directories()
+    conn = sqlite3.connect(config.DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -36,8 +56,8 @@ def run_migrations(conn: sqlite3.Connection | None = None) -> None:
     """Applique les migrations incrémentales (bases existantes incluses)."""
     own_conn = conn is None
     if own_conn:
-        ensure_directories()
-        conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+        config.ensure_directories()
+        conn = sqlite3.connect(config.DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
     try:
         apply_schema_migrations(conn)
@@ -54,12 +74,13 @@ def init_db(*, force: bool = False) -> None:
     n'existe pas encore. Si force=True, ré-applique le schéma (idempotent).
     Les migrations incrémentales sont toujours appliquées.
     """
-    ensure_directories()
+    _guard_production_db_in_tests()
+    config.ensure_directories()
 
-    db_exists = DB_PATH.is_file()
+    db_exists = config.DB_PATH.is_file()
     if not db_exists or force:
         schema_sql = _read_schema()
-        conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn = sqlite3.connect(config.DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         try:
@@ -69,7 +90,7 @@ def init_db(*, force: bool = False) -> None:
             conn.close()
 
     run_migrations()
-    logger.info("Base SQLite prête — migrations vérifiées (%s).", DB_PATH)
+    logger.info("Base SQLite prête — migrations vérifiées (%s).", config.DB_PATH)
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:

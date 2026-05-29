@@ -120,9 +120,32 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true')"
         )
         conn.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_model', 'gemini-1.5-flash')"
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_model', 'gemini-2.5-flash')"
+        )
+        conn.execute(
+            """
+            UPDATE settings SET value = 'gemini-2.5-flash'
+            WHERE key = 'gemini_model'
+              AND value IN (
+                  'gemini-1.5-flash',
+                  'gemini-1.5-pro',
+                  'gemini-2.0-flash',
+                  'gemini-2.0-flash-lite'
+              )
+            """
         )
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_api_key', '')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES "
+            "('active_ia_provider', 'Gemini (Natif)')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('openrouter_api_key', '')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES "
+            "('openrouter_model', 'qwen/qwen-2.5-vl-72b-instruct')"
         )
         conn.commit()

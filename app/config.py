@@ -28,8 +28,18 @@ OLLAMA_BASE_URL: str = "http://localhost:11434"
 OLLAMA_MODEL: str = "llama3.2-vision"
 OLLAMA_TIMEOUT_SECONDS: int = 120
 
-# Google Gemini (analyse documentaire)
-GEMINI_MODEL: str = "gemini-1.5-flash"
+# Google Gemini (analyse documentaire — modèle fixe)
+GEMINI_MODEL: str = "gemini-2.5-flash"
+
+# OpenRouter (mode Éco — Qwen vision)
+OPENROUTER_API_URL: str = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_DEFAULT_MODEL: str = "qwen/qwen-2.5-vl-72b-instruct"
+OPENROUTER_TIMEOUT_SECONDS: int = 120
+OPENROUTER_HTTP_REFERER: str = "https://github.com/lala/trankil-v2"
+
+IA_PROVIDER_GEMINI: str = "Gemini (Natif)"
+IA_PROVIDER_OPENROUTER: str = "OpenRouter (Éco)"
+IA_PROVIDER_OPTIONS: tuple[str, ...] = (IA_PROVIDER_GEMINI, IA_PROVIDER_OPENROUTER)
 
 # NiceGUI
 APP_PORT: int = 8080
@@ -74,6 +84,43 @@ def get_gemini_api_key() -> str | None:
         if stored and stored.strip():
             return stored.strip()
     return None
+
+
+def get_gemini_model() -> str:
+    """Modèle Gemini fixe (gemini-2.5-flash), surchargeable via GEMINI_MODEL (.env)."""
+    load_dotenv()
+    env_model = os.environ.get("GEMINI_MODEL", "").strip()
+    return env_model or GEMINI_MODEL
+
+
+def get_active_ia_provider() -> str:
+    """Moteur IA principal : settings.active_ia_provider → Gemini par défaut."""
+    from app.db.connection import get_setting
+
+    stored = (get_setting("active_ia_provider") or "").strip()
+    if stored in IA_PROVIDER_OPTIONS:
+        return stored
+    return IA_PROVIDER_GEMINI
+
+
+def get_openrouter_api_key() -> str | None:
+    """Clé OpenRouter : OPENROUTER_API_KEY (.env) puis settings."""
+    load_dotenv()
+    env_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    from app.db.connection import get_setting
+
+    stored = (get_setting("openrouter_api_key") or "").strip()
+    return stored or None
+
+
+def get_openrouter_model() -> str:
+    """Modèle OpenRouter : settings → défaut Qwen VL."""
+    from app.db.connection import get_setting
+
+    stored = (get_setting("openrouter_model") or "").strip()
+    return stored or OPENROUTER_DEFAULT_MODEL
 
 
 def ensure_directories() -> None:

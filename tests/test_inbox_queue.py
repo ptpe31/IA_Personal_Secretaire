@@ -66,4 +66,9 @@ def test_manual_pending_count(queue_service: InboxQueueService, tmp_path: Path):
 
     job.status = JobStatus.READY
     assert queue_service.manual_pending_count() == 1
+    assert queue_service.failed_analysis_count() == 0
     assert queue_service.active_processing_job() is None
+
+    job.status = JobStatus.FAILED
+    assert queue_service.manual_pending_count() == 0
+    assert queue_service.failed_analysis_count() == 1

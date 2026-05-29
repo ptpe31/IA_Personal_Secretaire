@@ -121,6 +121,14 @@ def create_document_upload(
     ).props(f'accept="{ACCEPT_MIME}" bordered flat').classes("w-full")
 
     async def process_upload(e: events.UploadEventArguments) -> None:
+        if queue.active_processing_job() is not None:
+            ui.notify(
+                "Analyse en cours — patientez avant d'envoyer un autre document.",
+                type="warning",
+            )
+            upload.reset()
+            return
+
         filename = e.file.name or "document"
         suffix = extension_from_filename(filename)
 

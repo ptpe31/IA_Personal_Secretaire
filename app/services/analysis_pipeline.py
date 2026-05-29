@@ -33,6 +33,11 @@ def sanitize_llm_payload(data: dict) -> dict:
         for task in cleaned["tasks"]:
             if not isinstance(task, dict):
                 continue
+            title = task.get("title")
+            if isinstance(title, str):
+                words = title.split()
+                if len(words) > 8:
+                    task["title"] = " ".join(words[:8])
             for key in ("date_event", "deadline", "date_emission", "suggestion"):
                 value = task.get(key)
                 if isinstance(value, str) and value.strip().lower() in (

@@ -6,13 +6,14 @@ import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from app.config import IA_PROVIDER_OPENROUTER, get_active_ia_provider
 from app.models.analysis import DocumentAnalysisResult
 
 logger = logging.getLogger(__name__)
 
 
 class AnalysisClient(ABC):
-    """Interface commune Gemini / Ollama / Mock."""
+    """Interface commune Gemini / OpenRouter / Ollama / Mock."""
 
     is_mock: bool = False
 
@@ -29,13 +30,24 @@ class AnalysisClient(ABC):
 
 def get_analysis_client() -> AnalysisClient:
     """
-    Retourne GeminiClient si une clé API est configurée,
-    sinon OllamaClient si le modèle local est prêt,
-    sinon MockOllamaClient.
+    Retourne le client selon ``active_ia_provider`` (settings) :
+    OpenRouter (Éco) → Gemini → Ollama → Mock.
     """
     from app.services.gemini_client import GeminiClient
     from app.services.mock_ollama_client import MockOllamaClient
     from app.services.ollama_client import OllamaClient
+    from app.services.openrouter_client import OpenRouterClient
+
+    provider = get_active_ia_provider()
+
+    if provider == IA_PROVIDER_OPENROUTER:
+        openrouter = OpenRouterClient()
+        if openrouter.is_available():
+            logger.info("OpenRouter prêt — modèle %s", openrouter.model_name)
+            return openrouter
+        logger.warning(
+            "OpenRouter (Éco) sélectionné mais clé absente — repli sur Gemini."
+        )
 
     gemini = GeminiClient()
     if gemini.is_available():
@@ -48,6 +60,24 @@ def get_analysis_client() -> AnalysisClient:
         return ollama
 
     logger.warning(
-        "Bascule vers MockOllamaClient (Gemini non configuré, Ollama injoignable)."
+        "Bascule vers MockOllamaClient (aucun moteur IA configuré ou disponible)."
     )
     return MockOllamaClient()
+
+
+def describe_analysis_engine(client: AnalysisClient) -> str:
+    """Libellé moteur + modèle pour l'interface (statut de traitement)."""
+    from app.services.gemini_client import GeminiClient
+    from app.services.mock_ollama_client import MockOllamaClient
+    from app.services.ollama_client import OllamaClient
+    from app.services.openrouter_client import OpenRouterClient
+
+    if isinstance(client, OpenRouterClient):
+        return f"OpenRouter ({client.model_name})"
+    if isinstance(client, GeminiClient):
+        return f"Gemini ({client.model_name})"
+    if isinstance(client, OllamaClient):
+        return f"Ollama ({client.model})"
+    if isinstance(client, MockOllamaClient):
+        return "mode démo"
+    return "IA"

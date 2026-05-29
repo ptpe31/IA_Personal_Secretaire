@@ -37,6 +37,87 @@ def create_settings_view() -> None:
         autopilot_switch.on("update:model-value", toggle_autopilot)
 
     with ui.card().classes("w-full q-mb-md"):
+        from app.config import (
+            GEMINI_MODEL,
+            IA_PROVIDER_OPTIONS,
+            get_active_ia_provider,
+            get_gemini_api_key,
+            get_gemini_model,
+            get_openrouter_model,
+        )
+        from app.services.inbox_queue import get_inbox_queue
+
+        ui.label("Moteur IA").classes("text-subtitle1 q-mb-sm")
+        ui.label(
+            "Gemini (natif) ou OpenRouter (Éco, Qwen VL). "
+            "La clé Gemini peut rester dans .env (GEMINI_API_KEY)."
+        ).classes("text-caption text-grey-7 q-mb-sm")
+
+        provider_select = ui.select(
+            list(IA_PROVIDER_OPTIONS),
+            value=get_active_ia_provider(),
+            label="Moteur IA principal",
+        ).props("dense outlined").classes("w-full q-mb-sm")
+
+        gemini_info = ui.column().classes("w-full q-mb-sm")
+        with gemini_info:
+            model = get_gemini_model()
+            ui.label(f"Gemini — modèle : {model}").classes("text-body2")
+            if model != GEMINI_MODEL:
+                ui.label(f"Défaut recommandé : {GEMINI_MODEL}").classes(
+                    "text-caption text-warning"
+                )
+            if get_gemini_api_key():
+                ui.label("Clé Gemini : configurée (.env ou settings)").classes(
+                    "text-caption text-positive"
+                )
+            else:
+                ui.label("Clé Gemini : absente (GEMINI_API_KEY)").classes(
+                    "text-caption text-negative"
+                )
+
+        openrouter_panel = ui.column().classes("w-full q-gutter-sm q-mb-sm")
+
+        def refresh_openrouter_visibility() -> None:
+            is_openrouter = provider_select.value == "OpenRouter (Éco)"
+            openrouter_panel.set_visibility(is_openrouter)
+            gemini_info.set_visibility(not is_openrouter)
+
+        with openrouter_panel:
+            ui.label("Configuration OpenRouter (Éco)").classes("text-subtitle2")
+            openrouter_key_input = ui.input(
+                "Clé API OpenRouter",
+                value=get_setting("openrouter_api_key", ""),
+                password=True,
+                password_toggle_button=True,
+            ).props("dense outlined").classes("w-full")
+            openrouter_model_input = ui.input(
+                "Modèle OpenRouter",
+                value=get_setting("openrouter_model", get_openrouter_model()),
+            ).props("dense outlined").classes("w-full")
+
+        refresh_openrouter_visibility()
+        provider_select.on("update:model-value", lambda: refresh_openrouter_visibility())
+
+        def save_ia_settings() -> None:
+            provider = str(provider_select.value or "Gemini (Natif)").strip()
+            set_setting("active_ia_provider", provider)
+            set_setting("openrouter_api_key", (openrouter_key_input.value or "").strip())
+            set_setting(
+                "openrouter_model",
+                (openrouter_model_input.value or get_openrouter_model()).strip(),
+            )
+            get_inbox_queue().reset_analysis_client()
+            refresh_openrouter_visibility()
+            ui.notify(f"Moteur IA enregistré : {provider}", type="positive")
+
+        ui.button(
+            "Enregistrer la configuration IA",
+            icon="save",
+            on_click=save_ia_settings,
+        ).props("outline color=primary")
+
+    with ui.card().classes("w-full q-mb-md"):
         ui.label("Relances anti-oubli").classes("text-subtitle1 q-mb-sm")
         ui.label(
             "Notifications macOS à J-3 et J-1 (application ouverte uniquement)."

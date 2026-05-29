@@ -8,7 +8,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from app.config import ROOT_PATH, ged_path_for_category
+from app import config
 from app.utils.slugify import build_ged_filename, unique_path
 
 
@@ -48,12 +48,12 @@ def move_inbox_to_ged(
     if not inbox_path.is_file():
         raise FileNotFoundError(f"Fichier inbox introuvable : {inbox_path}")
 
-    ged_dir = ged_path_for_category(category)
+    ged_dir = config.ged_path_for_category(category)
     ged_dir.mkdir(parents=True, exist_ok=True)
 
     filename = build_ged_filename(date_emission, title, inbox_path.suffix)
     destination = unique_path(ged_dir, filename)
     shutil.move(str(inbox_path), str(destination))
 
-    relative = destination.relative_to(ROOT_PATH).as_posix()
+    relative = destination.relative_to(config.ROOT_PATH).as_posix()
     return destination, relative

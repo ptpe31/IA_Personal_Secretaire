@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.config import ROOT_PATH
+from app import config
 from app.db.connection import get_connection
 from app.models.archive import ArchiveItem
 
@@ -109,7 +109,7 @@ def search_archives(
         ):
             continue
 
-        absolute = ROOT_PATH / stored_path
+        absolute = config.ROOT_PATH / stored_path
         items.append(
             ArchiveItem(
                 task_id=int(row["id"]),
