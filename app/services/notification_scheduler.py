@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 
+from app.services.email_scheduler import process_email_reminders
 from app.services.notification_service import process_deadline_reminders
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,9 @@ def _run_loop(interval_seconds: int) -> None:
             count = process_deadline_reminders()
             if count:
                 logger.info("%s notification(s) de relance envoyée(s).", count)
+            email_count = process_email_reminders()
+            if email_count:
+                logger.info("Relance email proactive envoyée.")
         except Exception:
             logger.exception("Erreur lors du traitement des relances")
         threading.Event().wait(interval_seconds)
@@ -34,6 +38,7 @@ def start_notification_scheduler(*, interval_seconds: int = _INTERVAL_SECONDS) -
     def initial_check() -> None:
         try:
             process_deadline_reminders()
+            process_email_reminders()
         except Exception:
             logger.exception("Erreur relance initiale")
 

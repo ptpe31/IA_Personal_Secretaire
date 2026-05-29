@@ -115,6 +115,8 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
     )
     backfill_task_suggestions(conn)
 
+    _ensure_email_reminders_log(conn)
+
     if _table_exists(conn, "settings"):
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true')"
@@ -148,4 +150,34 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO settings (key, value) VALUES "
             "('openrouter_model', 'qwen/qwen-2.5-vl-72b-instruct')"
         )
+        for key, value in (
+            ("email_reminder_enabled", "true"),
+            ("smtp_server", "smtp.gmail.com"),
+            ("smtp_port", "587"),
+            ("sender_email", ""),
+            ("recipient_email", ""),
+            ("email_reminder_last_sent_date", ""),
+        ):
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
         conn.commit()
+
+
+def _ensure_email_reminders_log(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "email_reminders_log"):
+        return
+    conn.execute(
+        """
+        CREATE TABLE email_reminders_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            reminder_date DATE NOT NULL,
+            sent_at DATETIME NOT NULL DEFAULT (datetime('now', 'localtime')),
+            UNIQUE (task_id, reminder_date)
+        )
+        """
+    )
+    conn.commit()
+    logger.info("Migration SQLite : table email_reminders_log créée.")

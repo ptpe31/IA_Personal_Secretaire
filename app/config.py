@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 # Chemin racine fixe V1 (spec §3.3)
@@ -44,6 +45,11 @@ IA_PROVIDER_OPTIONS: tuple[str, ...] = (IA_PROVIDER_GEMINI, IA_PROVIDER_OPENROUT
 # NiceGUI
 APP_PORT: int = 8080
 APP_TITLE: str = "Trankil-v2"
+
+# Email SMTP (relances J-1) — surchargeables via ~/Trankil-v2/config.yaml et .env
+DEFAULT_SMTP_SERVER: str = "smtp.gmail.com"
+DEFAULT_SMTP_PORT: int = 587
+USER_CONFIG_YAML: Path = ROOT_PATH / "config.yaml"
 
 # Extensions acceptées par l'Inbox (spec §5.1)
 ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
@@ -121,6 +127,122 @@ def get_openrouter_model() -> str:
 
     stored = (get_setting("openrouter_model") or "").strip()
     return stored or OPENROUTER_DEFAULT_MODEL
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+    enabled: bool
+    smtp_server: str
+    smtp_port: int
+    sender_email: str
+    recipient_email: str
+    app_password: str | None
+
+
+def _parse_email_yaml_section(text: str) -> dict[str, str | int | bool]:
+    """Parse minimal de la section `email:` dans config.yaml (sans dépendance PyYAML)."""
+    data: dict[str, str | int | bool] = {}
+    in_email = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "email:":
+            in_email = True
+            continue
+        if not in_email:
+            continue
+        if line and not line[0].isspace():
+            break
+        if ":" not in stripped:
+            continue
+        key, _, raw_value = stripped.partition(":")
+        key = key.strip()
+        value = raw_value.strip().strip('"').strip("'")
+        if key == "enabled":
+            data[key] = value.lower() in ("true", "1", "yes", "on")
+        elif key == "smtp_port":
+            try:
+                data[key] = int(value)
+            except ValueError:
+                data[key] = DEFAULT_SMTP_PORT
+        elif value:
+            data[key] = value
+    return data
+
+
+def _load_email_yaml_config() -> dict[str, str | int | bool]:
+    for path in (USER_CONFIG_YAML, PROJECT_ROOT / "config.yaml"):
+        if path.is_file():
+            return _parse_email_yaml_section(path.read_text(encoding="utf-8"))
+    return {}
+
+
+def get_email_config() -> EmailConfig:
+    """
+    Configuration SMTP pour les relances email.
+
+    Priorité : settings SQLite → config.yaml → .env → valeurs par défaut.
+    Le mot de passe d'application Google doit être dans .env (SMTP_APP_PASSWORD).
+    """
+    load_dotenv()
+    from app.db.connection import get_setting
+
+    yaml_cfg = _load_email_yaml_config()
+
+    def _bool_setting(key: str, yaml_key: str, default: bool = True) -> bool:
+        stored = (get_setting(key) or "").strip().lower()
+        if stored in ("true", "false"):
+            return stored == "true"
+        if yaml_key in yaml_cfg:
+            return bool(yaml_cfg[yaml_key])
+        return default
+
+    def _str_setting(key: str, yaml_key: str, env_key: str = "", default: str = "") -> str:
+        stored = (get_setting(key) or "").strip()
+        if stored:
+            return stored
+        yaml_val = yaml_cfg.get(yaml_key)
+        if isinstance(yaml_val, str) and yaml_val.strip():
+            return yaml_val.strip()
+        if env_key:
+            env_val = os.environ.get(env_key, "").strip()
+            if env_val:
+                return env_val
+        return default
+
+    smtp_port_raw = (get_setting("smtp_port") or "").strip()
+    if smtp_port_raw.isdigit():
+        smtp_port = int(smtp_port_raw)
+    elif isinstance(yaml_cfg.get("smtp_port"), int):
+        smtp_port = int(yaml_cfg["smtp_port"])
+    else:
+        smtp_port = DEFAULT_SMTP_PORT
+
+    sender = _str_setting("sender_email", "sender_email", "SMTP_SENDER_EMAIL")
+    recipient = _str_setting("recipient_email", "recipient_email", "SMTP_RECIPIENT_EMAIL")
+    if not recipient:
+        recipient = sender
+
+    app_password = os.environ.get("SMTP_APP_PASSWORD", "").strip()
+    if not app_password:
+        yaml_pwd = yaml_cfg.get("app_password")
+        if isinstance(yaml_pwd, str) and yaml_pwd.strip():
+            app_password = yaml_pwd.strip()
+
+    return EmailConfig(
+        enabled=_bool_setting("email_reminder_enabled", "enabled", default=True),
+        smtp_server=_str_setting(
+            "smtp_server",
+            "smtp_server",
+            default=DEFAULT_SMTP_SERVER,
+        )
+        or DEFAULT_SMTP_SERVER,
+        smtp_port=smtp_port,
+        sender_email=sender,
+        recipient_email=recipient,
+        app_password=app_password or None,
+    )
 
 
 def ensure_directories() -> None:

@@ -120,7 +120,8 @@ def create_settings_view() -> None:
     with ui.card().classes("w-full q-mb-md"):
         ui.label("Relances anti-oubli").classes("text-subtitle1 q-mb-sm")
         ui.label(
-            "Notifications macOS à J-3 et J-1 (application ouverte uniquement)."
+            "Notifications macOS à J-3 et J-1, plus relance email à J-1 "
+            "(application ouverte uniquement)."
         ).classes("text-caption text-grey-7 q-mb-sm")
 
         notif_switch = ui.switch(
@@ -133,6 +134,69 @@ def create_settings_view() -> None:
             ui.notify("Préférence enregistrée.", type="info")
 
         notif_switch.on("update:model-value", toggle_notifications)
+
+    with ui.card().classes("w-full q-mb-md"):
+        from app.config import DEFAULT_SMTP_PORT, DEFAULT_SMTP_SERVER, get_email_config
+
+        ui.label("Relance proactive par email (Gmail)").classes("text-subtitle1 q-mb-sm")
+        ui.label(
+            "Envoie un email récapitulatif chaque jour pour les tâches échéant demain. "
+            "Utilisez un mot de passe d'application Google (pas votre mot de passe Gmail) "
+            "dans le fichier .env : SMTP_APP_PASSWORD=..."
+        ).classes("text-caption text-grey-7 q-mb-sm")
+        ui.label(
+            "Configuration avancée : copiez config.yaml.example vers ~/Trankil-v2/config.yaml"
+        ).classes("text-caption text-grey-6 q-mb-sm")
+
+        email_cfg = get_email_config()
+        email_switch = ui.switch(
+            "Activer la relance email",
+            value=get_setting("email_reminder_enabled", "true") == "true",
+        )
+        sender_input = ui.input(
+            "Email expéditeur (Gmail)",
+            value=get_setting("sender_email", "") or email_cfg.sender_email,
+        ).props("dense outlined").classes("w-full")
+        recipient_input = ui.input(
+            "Email destinataire (vide = même adresse)",
+            value=get_setting("recipient_email", ""),
+        ).props("dense outlined").classes("w-full")
+        smtp_server_input = ui.input(
+            "Serveur SMTP",
+            value=get_setting("smtp_server", DEFAULT_SMTP_SERVER),
+        ).props("dense outlined").classes("w-full")
+        smtp_port_input = ui.input(
+            "Port SMTP",
+            value=get_setting("smtp_port", str(DEFAULT_SMTP_PORT)),
+        ).props("dense outlined").classes("w-full")
+
+        if email_cfg.app_password:
+            ui.label("Mot de passe d'application : configuré (.env)").classes(
+                "text-caption text-positive q-mb-sm"
+            )
+        else:
+            ui.label("Mot de passe d'application : absent (SMTP_APP_PASSWORD)").classes(
+                "text-caption text-negative q-mb-sm"
+            )
+
+        def save_email_settings() -> None:
+            set_setting("email_reminder_enabled", "true" if email_switch.value else "false")
+            set_setting("sender_email", (sender_input.value or "").strip())
+            set_setting("recipient_email", (recipient_input.value or "").strip())
+            set_setting("smtp_server", (smtp_server_input.value or DEFAULT_SMTP_SERVER).strip())
+            set_setting("smtp_port", (smtp_port_input.value or str(DEFAULT_SMTP_PORT)).strip())
+            ui.notify("Configuration email enregistrée.", type="positive")
+
+        def toggle_email_reminder() -> None:
+            set_setting("email_reminder_enabled", "true" if email_switch.value else "false")
+            ui.notify("Préférence email enregistrée.", type="info")
+
+        email_switch.on("update:model-value", toggle_email_reminder)
+        ui.button(
+            "Enregistrer la configuration email",
+            icon="save",
+            on_click=save_email_settings,
+        ).props("outline color=primary")
 
     with ui.card().classes("w-full"):
         ui.label("Google Calendar").classes("text-subtitle1 q-mb-sm")

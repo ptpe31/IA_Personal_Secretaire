@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS notifications_log (
     UNIQUE (task_id, notification_type)
 );
 
+CREATE TABLE IF NOT EXISTS email_reminders_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    reminder_date DATE NOT NULL,
+    sent_at DATETIME NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (task_id, reminder_date)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -75,6 +83,12 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_model', 'gemini-2.5-
 INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_api_key', '');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('google_calendar_auto_sync', 'false');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('notification_enabled', 'true');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('email_reminder_enabled', 'true');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('smtp_server', 'smtp.gmail.com');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('smtp_port', '587');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('sender_email', '');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('recipient_email', '');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('email_reminder_last_sent_date', '');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('active_ia_provider', 'Gemini (Natif)');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('openrouter_api_key', '');

@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.7-implemented  
+> **Version** : 0.8-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — thème Google Workspace, tri Kanban chronologique, multi-IA (Gemini / OpenRouter Éco)  
+> **Statut** : V1 fonctionnelle — Dashboard bi-mode (Kanban / Liste), relances email J-1, cartes pastel par lot, multi-IA  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -122,6 +122,17 @@ GEMINI_API_KEY=votre_cle_api_google
 Clés Gemini : variable d'environnement → table SQLite (`gemini_api_key`).  
 Clés OpenRouter : Paramètres UI ou `OPENROUTER_API_KEY` dans `.env`.
 
+**Relance email (SMTP Gmail)** — voir §8.4 et `config.yaml.example` :
+
+```env
+# Mot de passe d'application Google (jamais le mot de passe du compte Gmail)
+SMTP_SENDER_EMAIL=ton_email@gmail.com
+SMTP_RECIPIENT_EMAIL=ton_email@gmail.com
+SMTP_APP_PASSWORD=
+```
+
+Fichier optionnel `~/Trankil-v2/config.yaml` (copie de `config.yaml.example`) pour `smtp_server`, `smtp_port`, `sender_email`. Le secret reste dans `.env`.
+
 ### 2.4 Lancement
 
 | Méthode | Usage |
@@ -215,7 +226,7 @@ launchctl load ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
 |-----------|------|
 | **Main app** (`main.py`) | Point d'entrée NiceGUI ; Dashboard = onglet par défaut ; navigation entre vues |
 | **InboxQueueService** | File FIFO asynchrone : upload → analyse IA en arrière-plan → Autopilote ou file manuelle |
-| **Background scheduler** | Thread daemon : vérifie deadlines, envoie notifications J-3 / J-1 (**app ouverte uniquement en V1**) |
+| **Background scheduler** | Thread daemon : notifications macOS J-3 / J-1 + **relance email J-1** (`notification_scheduler.py`, `email_scheduler.py`) — app ouverte uniquement en V1 |
 | **Services** | Couche métier découplée de l'UI (testable unitairement) |
 
 ### 3.3 Emplacement des données (chemin fixe V1)
@@ -227,6 +238,7 @@ launchctl load ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
 | GED Perso | `~/Trankil-v2/Perso/GED/` |
 | Base SQLite | `~/Trankil-v2/database.sqlite` |
 | Inbox temporaire | `~/Trankil-v2/.inbox/` (fichiers en attente de validation manuelle) |
+| Config email | `~/Trankil-v2/config.yaml` (optionnel — voir `config.yaml.example`) |
 | Credentials Google | `~/Trankil-v2/.credentials/google_calendar/` (hors git) |
 
 Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérieure.
@@ -297,6 +309,16 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | `notification_type` | TEXT | `'j_minus_3'` \| `'j_minus_1'` |
 | `sent_at` | DATETIME | Évite les doublons |
 
+#### Table `email_reminders_log`
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `id` | INTEGER PK | |
+| `task_id` | INTEGER FK | |
+| `reminder_date` | DATE | Date d'envoi de la relance email |
+| `sent_at` | DATETIME | |
+| UNIQUE (`task_id`, `reminder_date`) | | Idempotence par jour |
+
 #### Table `settings`
 
 | Colonne | Type | Description |
@@ -317,7 +339,13 @@ Clés settings :
 | `openrouter_model` | `"qwen/qwen-2.5-vl-72b-instruct"` | Modèle vision OpenRouter |
 | `autopilot_enabled` | `"true"` | Validation automatique post-analyse |
 | `google_calendar_auto_sync` | `"false"` | Sync Calendar à la validation (**OFF par défaut**) |
-| `notification_enabled` | `"true"` | Relances J-3 / J-1 |
+| `notification_enabled` | `"true"` | Relances macOS J-3 / J-1 |
+| `email_reminder_enabled` | `"true"` | Relance email proactive J-1 |
+| `smtp_server` | `"smtp.gmail.com"` | Serveur SMTP |
+| `smtp_port` | `"587"` | Port SMTP (STARTTLS) |
+| `sender_email` | `""` | Expéditeur Gmail |
+| `recipient_email` | `""` | Destinataire (vide = même adresse) |
+| `email_reminder_last_sent_date` | `""` | Idempotence envoi quotidien |
 
 ### 4.2 Règles métier — Statut des tâches
 
@@ -381,11 +409,13 @@ La page est divisée en **deux sections verticales** :
 ├─────────────────────────────────────────────────────────────┤
 │  [bannière validation manuelle Inbox — toujours visible]     │
 ├─────────────────────────────────────────────────────────────┤
-│  SECTION BASSE — Filtres + Kanban                            │
+│  SECTION BASSE — Filtres + Vue (Kanban ou Liste)             │
 │  Filtrer : [Tout] [Pro] [Perso]   #tag1 #tag2 …             │
-│  ┌─────────────┬─────────────┬─────────────┐                 │
+│  Vue : [Kanban ▤] [Liste ≡]                                  │
+│  ┌─────────────┬─────────────┬─────────────┐  (mode Kanban) │
 │  │ EN RETARD   │ À FAIRE     │ ARCHIVÉ     │                 │
 │  └─────────────┴─────────────┴─────────────┘                 │
+│  — ou tableau dense lignes alternées (mode Liste) —           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -481,7 +511,29 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 | **Perso uniquement** | `category = 'perso'` |
 | **Méta-tags** | Chips cliquables ; multi-sélection en logique **OR** |
 
-### 5.8 Colonnes Kanban
+### 5.8 Vue bi-mode — Kanban & Liste
+
+Sélecteur discret sous les chips (`ui.state('kanban')` dans `dashboard_view.py`) :
+
+| Mode | Icône | Usage |
+|------|-------|-------|
+| **Kanban** (défaut) | `view_kanban` | Visualisation flux, urgence, colonnes |
+| **Liste** | `list` | Haute densité — 20–30 tâches visibles sans scroll horizontal |
+
+**Vue Liste** (`sort_list_view_tasks()` dans `dates.py`) :
+
+| Colonne | Contenu |
+|---------|---------|
+| Bordure gauche | Couleur lot (`document_id % 6`) — `batch_border_left_classes()` |
+| Titre | Gras ; tâches « enfants » du même lot : indentation `ml-12`, icône `subdirectory_arrow_right`, texte réduit |
+| Catégorie | Badge Pro / Perso |
+| Échéance | Pilule date |
+| Suggestion | Texte tronqué |
+| Actions | Checkbox « Fait » + suppression |
+
+Tri : lots regroupés, échéances proches en haut (cohérent avec le Kanban). Tâches archivées visibles uniquement en mode Kanban (colonne ARCHIVÉ).
+
+### 5.9 Colonnes Kanban
 
 | Colonne | Contenu | Style |
 |---------|---------|-------|
@@ -497,32 +549,36 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 
 Implémentation : `sort_kanban_urgent()` et `sort_kanban_todo()` dans `app/utils/dates.py` ; tests dans `tests/test_task_status.py`.
 
-### 5.9 Carte tâche
+### 5.10 Carte tâche
 
 ```
 [Pro] Séance de formation (1/3)              [🔁 Mensuel]
-• Reçu le : 28/05/2026
+📧 28/05/2026
 • Date événement : 05/11/2026
 • Deadline : 05/11/2026
 💡 Horaires : 14h à 16h
 • Tags : #formation #organisme
-☐ Fait    [Modifier]    [Suppr.]    [📅 Sync Calendar]
+☐ Fait    [Modifier] [@ GED] [Suppr.]    [📅 Sync Calendar]
 ```
+
+- Fond **pastel par lot document** (`BATCH_PASTEL_PALETTE`, `task_card_classes()`)
+- Date de réception : icône mail + pilule uniquement (sans libellé « Reçu le »)
 
 Interactions :
 - **Checkbox « Fait »** → archivage ; si récurrente → prochaine occurrence créée automatiquement
 - **Bouton « Modifier »** → modal d'édition (`task_edit_dialog.py`)
+- **Bouton « @ »** (`alternate_email`) → ouvre le fichier GED associé (`open_file` macOS) ; masqué si pas de `stored_path`
 - **Bouton « Suppr. »** → suppression définitive (fichier GED conservé)
 - **Sync Calendar** → création événement manuelle (§10)
 
-### 5.10 Rafraîchissement
+### 5.11 Rafraîchissement
 
 - Recalcul colonne « Urgent » à chaque chargement et toutes les **60 s** (timer NiceGUI)
 - **Re-tri chronologique** des colonnes Urgent et À faire à chaque rafraîchissement Kanban
 - Rafraîchissement à chaque changement d'onglet (`tab_registry.py`)
-- Rafraîchissement Kanban à chaque événement de la file d'analyse, création manuelle ou archivage récurrent
+- Rafraîchissement Kanban **ou Liste** à chaque événement de la file d'analyse, création manuelle ou archivage récurrent
 
-### 5.11 Thème visuel — Google Workspace
+### 5.12 Thème visuel — Google Workspace
 
 Module central : `app/ui/google_theme.py` — palette Google Clean & Bright, injectée via `apply_google_theme()` dans `main.py`.
 
@@ -532,13 +588,14 @@ Module central : `app/ui/google_theme.py` — palette Google Clean & Bright, inj
 | **Header** | Blanc, icône `task_alt`, titre gris foncé |
 | **Navigation** | Onglets pill-shaped (pilules arrondies, indicateur masqué) |
 | **Filtres catégorie** | Chips `Tout / Pro / Perso` (noir, bleu, vert selon actif) |
-| **Cartes tâche** | Material : coins 16px, ombre légère, bordure `#e5e7eb` |
-| **Carte urgente** | Bordure gauche rouge `#ea4335` |
+| **Cartes tâche** | Pastel Google Keep par lot + ombre légère ; urgent = bordure rouge gauche |
+| **Vue Liste** | Lignes blanches, bordure lot `border-l-4`, hover gris clair |
+| **Toggle vue** | Boutons pill `trankil-view-toggle` |
 | **Métadonnées dates** | Icône grise + pilule grise (`trankil-date-pill`) |
 | **Suggestion IA** | Encart ambre avec icône ampoule |
 | **Actions carte** | Icônes grises discrètes (modifier, supprimer, calendrier) |
 
-Helpers exportés : `CARD_GOOGLE`, `FILTER_CHIP_*`, `category_badge_classes()`, `render_date_meta()`, etc.
+Helpers exportés : `task_card_classes()`, `batch_border_left_classes()`, `view_toggle_classes()`, `render_date_meta()`, etc.
 
 ---
 
@@ -703,9 +760,31 @@ Implémentation V1 :
 - **Uniquement tant que l'application est ouverte.**
 - Log dans `notifications_log` pour idempotence.
 
-**V1.1** : daemon `launchd` pour notifications même app fermée.
+**V1.1** : daemon `launchd` pour notifications macOS même app fermée.
 
-### 8.4 Google Calendar Sync
+### 8.4 Relance proactive par email (Gmail)
+
+Service : `app/services/email_scheduler.py` · configuration : `get_email_config()` dans `config.py`, Paramètres UI, `~/Trankil-v2/config.yaml`, `.env` (`SMTP_APP_PASSWORD`).
+
+| Déclencheur | Condition | Action |
+|-------------|-----------|--------|
+| J-1 (email) | Tâches actives (`todo` / `urgent`, non archivées) dont `deadline == demain` | **Un seul email par jour** regroupant toutes les tâches concernées |
+
+**Objet** (1 tâche) : `🚨 Secrétaire iA_Rappel : Tâche urgente pour demain - [Titre]`  
+**Objet** (N tâches) : `🚨 Secrétaire iA_Rappel : N tâches urgentes pour demain`
+
+**Corps** : rappel personnalisé avec titre(s) et date(s) d'échéance formatées (`format_date_fr`).
+
+Implémentation :
+- SMTP Gmail (`smtp.gmail.com:587`, STARTTLS) via `smtplib`
+- **Mot de passe d'application Google** obligatoire (pas le mot de passe du compte)
+- Intégré au planificateur existant (`process_email_reminders()` appelé par `notification_scheduler.py`)
+- Idempotence : setting `email_reminder_last_sent_date` + log `email_reminders_log`
+- **try/except** réseau/SMTP — l'app ne plante pas si internet est coupé
+
+Toggle Paramètres : « Relance proactive par email (Gmail) » — dépend aussi de `notification_enabled`.
+
+### 8.5 Google Calendar Sync
 
 Voir §10.
 
@@ -844,6 +923,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── .env.example
 ├── .gitignore
 ├── main.py                      # entrypoint NiceGUI — Dashboard onglet défaut
+├── config.yaml.example          # modèle SMTP Gmail → ~/Trankil-v2/config.yaml
 ├── start.command                # double-clic Bureau (purge __pycache__ + python -B)
 ├── app/
 │   ├── config.py                # constantes (ROOT_PATH fixe)
@@ -871,10 +951,11 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── task_expansion.py    # ancrage dates relatives
 │   │   ├── db_maintenance.py    # purge SQLite
 │   │   ├── notification_service.py
+│   │   ├── email_scheduler.py   # relance email J-1 (SMTP Gmail)
 │   │   ├── notification_scheduler.py
 │   │   └── calendar_service.py
 │   ├── ui/
-│   │   ├── dashboard_view.py    # page d'accueil — expansion + Kanban trié
+│   │   ├── dashboard_view.py    # page d'accueil — Kanban / Liste bi-mode
 │   │   ├── google_theme.py      # thème Google Workspace (CSS + helpers)
 │   │   ├── inbox_view.py        # validation manuelle split-view
 │   │   ├── document_upload.py   # dépôt + collage (2 ou 3 colonnes)
@@ -886,7 +967,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── calendar_button.py
 │   │   └── tab_registry.py
 │   └── utils/
-│       ├── dates.py             # colonnes Kanban + tri chronologique
+│       ├── dates.py             # colonnes Kanban + tri chronologique + tri Liste
 │       ├── tags.py
 │       ├── slugify.py
 │       ├── file_preview.py
@@ -896,7 +977,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/                       # 70+ tests unitaires (conftest isolation SQLite)
+└── tests/                       # 89+ tests unitaires (conftest isolation SQLite)
 ```
 
 ---
@@ -938,10 +1019,11 @@ IA_Personal_Secretaire/          # dépôt git
 
 ### Phase 4 — Automatisations ✅
 - [x] Notifications J-3 / J-1 (app ouverte)
+- [x] **Relance email J-1** (SMTP Gmail, regroupement multi-tâches)
 - [x] Google Calendar OAuth + sync manuelle + option auto
 
 ### Phase 5 — Polish 🔄
-- [x] Settings UI (Autopilote, sync Calendar, notifications, **purge SQLite**)
+- [x] Settings UI (Autopilote, sync Calendar, notifications, email SMTP, **purge SQLite**)
 - [x] **Multi-IA** : sélecteur Gemini / OpenRouter (Éco) + clés dans Paramètres
 - [x] Migration SDK **`google-genai`** · modèle `gemini-2.5-flash` · température 0
 - [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
@@ -949,7 +1031,9 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Tâches manuelles + colonnes récurrence SQLite
 - [x] Cartes Kanban : affichage **date événement**
 - [x] **Tri chronologique Kanban** : urgent (deadline ASC) + à faire (proche en haut, sans date en bas)
-- [x] **Thème Google Workspace** (`google_theme.py`) — header blanc, chips, cartes Material
+- [x] **Thème Google Workspace** (`google_theme.py`) — header blanc, chips, cartes pastel par lot
+- [x] **Vue Liste haute densité** + sélecteur Kanban / Liste
+- [x] Ouverture GED (@) depuis les cartes Dashboard
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -984,7 +1068,9 @@ IA_Personal_Secretaire/          # dépôt git
 | **Fallback IA** | Gemini → **Ollama** local → **Mock** démo |
 | **raw_summary** | **Stocké en base**, indexé pour recherche GED |
 | **Suggestion IA** | Champ `suggestion` affiché sur cartes Dashboard (💡) |
-| **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 |
+| **Dashboard** | **Bi-mode** : Kanban (défaut) + **Vue Liste** haute densité |
+| **Relances** | macOS J-3/J-1 + **email J-1** (Gmail SMTP, 1 mail/jour regroupé) |
+| **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 + email J-1 |
 | **Google Calendar** | **OFF par défaut**, bouton manuel ; procédure README |
 | **Notifications V1** | **App ouverte uniquement** ; launchd en V1.1 |
 | **HEIC** | **Oui V1** via `pillow-heif` |
@@ -1024,6 +1110,8 @@ IA_Personal_Secretaire/          # dépôt git
 
 - [x] Recherche GED (titre + raw_summary + tags).
 - [x] Notifications J-3 et J-1 sur Mac (app ouverte).
+- [x] Relance email J-1 (Gmail, mot de passe d'application).
+- [x] Vue Liste Dashboard + cartes pastel par lot document.
 - [x] Sync Google Calendar manuelle + option auto (OFF par défaut).
 - [x] Toggle Autopilote dans Paramètres.
 - [x] Purge SQLite depuis Paramètres (données métier uniquement).
@@ -1037,7 +1125,7 @@ IA_Personal_Secretaire/          # dépôt git
 > → **2 tâches** créées depuis un seul document.  
 > → Catégorie Pro, tags Spectacle / Répétition, deadlines officielles extraites.  
 > → Suggestions IA affichées sur les cartes Dashboard.  
-> → Relances automatiques à J-3 et J-1 pour chaque deadline.
+> → Relances automatiques à J-3 et J-1 (macOS) + email J-1 pour chaque deadline.
 
 ## Annexe B — Commandes dev
 
@@ -1061,6 +1149,9 @@ python main.py
 cp .env.example .env
 # Éditer GEMINI_API_KEY=... et/ou OPENROUTER_API_KEY=...
 
+# Configuration email (copier config.yaml.example → ~/Trankil-v2/config.yaml)
+# SMTP_APP_PASSWORD=...  # mot de passe d'application Google dans .env
+
 # Vérifier Ollama (fallback optionnel)
 python scripts/check_ollama.py
 ollama pull llama3.2-vision
@@ -1071,4 +1162,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard escamotable 3 colonnes, Autopilote, routines récurrentes, purge SQLite, isolation tests SQLite et **70+ tests** pytest. Prochaine étape recommandée : finaliser le README.
+**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard **bi-mode** (Kanban / Liste), cartes pastel par lot, relances macOS + **email J-1**, Autopilote, routines récurrentes, LaunchAgent, purge SQLite, isolation tests SQLite et **89+ tests** pytest. Prochaine étape recommandée : finaliser le README.

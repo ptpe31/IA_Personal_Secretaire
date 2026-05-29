@@ -9,6 +9,7 @@ from app.db.connection import get_connection
 logger = logging.getLogger(__name__)
 
 _DATA_TABLES = (
+    "email_reminders_log",
     "notifications_log",
     "task_tags",
     "tasks",

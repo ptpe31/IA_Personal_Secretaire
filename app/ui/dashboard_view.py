@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from app import config
 from app.models.task import TaskDTO
 from app.services.inbox_queue import JobStatus, get_inbox_queue
 from app.services.analysis_client import describe_analysis_engine
@@ -31,18 +32,23 @@ from app.ui.google_theme import (
     ICON_BTN,
     ICON_BTN_DANGER,
     SUGGESTION_BOX,
+    batch_border_left_classes,
     category_badge_classes,
     chip_classes,
     render_date_meta,
     task_card_classes,
+    view_toggle_classes,
 )
 from app.utils.dates import (
     compute_kanban_column,
     format_date_fr,
+    kanban_batch_sort_key,
     sort_kanban_no_date,
     sort_kanban_todo,
     sort_kanban_urgent,
+    sort_list_view_tasks,
 )
+from app.utils.finder import open_file
 from app.utils.recurrence import RECURRENCE_DISPLAY
 
 logger = logging.getLogger(__name__)
@@ -87,8 +93,8 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
     ui.separator().classes("q-my-md")
 
-    filter_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-md")
-    board_container = ui.row().classes("w-full q-col-gutter-md items-start")
+    filter_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-sm")
+    tasks_workspace_container = ui.column().classes("w-full")
 
     @ui.refreshable
     def render_processing_status() -> None:
@@ -172,7 +178,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 def set_category(k: str = key) -> None:
                     state["category"] = k
                     render_category_filters.refresh()
-                    render_board.refresh()
+                    render_tasks_workspace.refresh()
 
                 ui.button(
                     label,
@@ -180,6 +186,30 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 ).props("flat unelevated no-caps").classes(
                     chip_classes(key, state["category"])
                 )
+
+    def confirm_delete_task(task: TaskDTO) -> None:
+        with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
+            ui.label("Supprimer cette tâche ?").classes("text-subtitle1 q-mb-xs")
+            ui.label(task.title).classes("text-body2 q-mb-sm")
+            ui.label(
+                "Suppression définitive de la base. Le fichier GED n'est pas effacé."
+            ).classes("text-caption text-grey-7 q-mb-md")
+            with ui.row().classes("justify-end q-gutter-sm w-full"):
+                ui.button("Annuler", on_click=dialog.close).props("flat")
+
+                def do_delete(tid: int = task.id) -> None:
+                    delete_task(tid)
+                    dialog.close()
+                    ui.notify("Tâche supprimée.", type="positive")
+                    render_tasks_workspace.refresh()
+
+                ui.button(
+                    "Supprimer",
+                    icon="delete",
+                    on_click=do_delete,
+                ).props("color=negative unelevated")
+
+        dialog.open()
 
     def render_task_card(task: TaskDTO, column: str) -> None:
         cat_label = "Pro" if task.category == "pro" else "Perso"
@@ -192,28 +222,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         )
 
         def confirm_delete(t: TaskDTO = task) -> None:
-            with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
-                ui.label("Supprimer cette tâche ?").classes("text-subtitle1 q-mb-xs")
-                ui.label(t.title).classes("text-body2 q-mb-sm")
-                ui.label(
-                    "Suppression définitive de la base. Le fichier GED n'est pas effacé."
-                ).classes("text-caption text-grey-7 q-mb-md")
-                with ui.row().classes("justify-end q-gutter-sm w-full"):
-                    ui.button("Annuler", on_click=dialog.close).props("flat")
-
-                    def do_delete(tid: int = t.id) -> None:
-                        delete_task(tid)
-                        dialog.close()
-                        ui.notify("Tâche supprimée.", type="positive")
-                        render_board.refresh()
-
-                    ui.button(
-                        "Supprimer",
-                        icon="delete",
-                        on_click=do_delete,
-                    ).props("color=negative unelevated")
-
-            dialog.open()
+            confirm_delete_task(t)
 
         with ui.card().classes(card_classes).props("flat"):
             with ui.row().classes("items-start q-gutter-xs q-mb-sm"):
@@ -227,7 +236,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
             render_date_meta(
                 icon="mail",
-                label="Reçu le",
                 value=format_date_fr(task.date_emission),
             )
             render_date_meta(
@@ -255,7 +263,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         from app.services.task_service import unarchive_task
 
                         unarchive_task(task.id)
-                        render_board.refresh()
+                        render_tasks_workspace.refresh()
 
                     ui.button("Réouvrir", icon="undo", on_click=uncheck).props(
                         "flat dense round size=sm no-caps"
@@ -272,7 +280,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                                 )
                             else:
                                 ui.notify("Tâche archivée.", type="positive")
-                            render_board.refresh()
+                            render_tasks_workspace.refresh()
 
                     ui.checkbox("Fait", on_change=mark_done).props("color=green-7")
 
@@ -280,10 +288,26 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                     icon="edit",
                     on_click=lambda t=task: open_task_edit_dialog(
                         t,
-                        render_board.refresh,
-                        on_deleted=render_board.refresh,
+                        render_tasks_workspace.refresh,
+                        on_deleted=render_tasks_workspace.refresh,
                     ),
                 ).props("flat round dense size=sm").classes(ICON_BTN).tooltip("Modifier")
+
+                if task.stored_path:
+
+                    def open_ged_document(t: TaskDTO = task) -> None:
+                        path = config.ROOT_PATH / t.stored_path
+                        try:
+                            open_file(path)
+                        except Exception as exc:
+                            ui.notify(str(exc), type="negative")
+
+                    ui.button(
+                        icon="alternate_email",
+                        on_click=open_ged_document,
+                    ).props("flat round dense size=sm").classes(ICON_BTN).tooltip(
+                        "Ouvrir le document GED"
+                    )
 
                 ui.button(
                     icon="delete",
@@ -293,13 +317,67 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 )
 
                 if column != "archived":
-                    add_calendar_sync_button(task, on_synced=render_board.refresh)
+                    add_calendar_sync_button(task, on_synced=render_tasks_workspace.refresh)
 
-    @ui.refreshable
-    def render_board() -> None:
+    def render_list_row(task: TaskDTO, *, is_child: bool) -> None:
+        cat_label = "Pro" if task.category == "pro" else "Perso"
+        border_cls = batch_border_left_classes(task.document_id, task.created_at)
+        row_classes = (
+            "trankil-list-row w-full items-center p-3 bg-white border-b border-gray-100 "
+            "hover:bg-gray-50 gap-3 flex-nowrap"
+        )
+        if is_child:
+            row_classes += " ml-12"
+
+        title_classes = (
+            "text-xs text-grey-7 col"
+            if is_child
+            else "text-sm font-medium text-grey-9 col"
+        )
+
+        with ui.row().classes(f"{row_classes} {border_cls}"):
+            if is_child:
+                ui.icon("subdirectory_arrow_right").classes("text-gray-300 shrink-0")
+
+            ui.label(cat_label).classes(category_badge_classes(task.category))
+
+            ui.label(task.title).classes(title_classes)
+
+            ui.label(format_date_fr(task.deadline)).classes(
+                "text-caption text-grey-7 shrink-0 trankil-date-pill"
+            )
+
+            if task.suggestion:
+                ui.label(task.suggestion).classes(
+                    "text-caption text-grey-6 col-grow ellipsis"
+                ).style("max-width: 280px")
+            else:
+                ui.element("div").classes("col-grow")
+
+            def mark_done(e, tid: int = task.id) -> None:
+                if e.value:
+                    spawned_id = archive_task(tid)
+                    if spawned_id:
+                        ui.notify(
+                            "Tâche archivée — prochaine occurrence planifiée.",
+                            type="positive",
+                        )
+                    else:
+                        ui.notify("Tâche archivée.", type="positive")
+                    render_tasks_workspace.refresh()
+
+            ui.checkbox(on_change=mark_done).props("color=green-7 dense").tooltip("Fait")
+
+            ui.button(
+                icon="delete",
+                on_click=lambda t=task: confirm_delete_task(t),
+            ).props("flat round dense size=sm").classes(ICON_BTN_DANGER).tooltip(
+                "Supprimer"
+            )
+
+    def _load_task_buckets() -> dict[str, list[TaskDTO]]:
         refresh_task_statuses()
         tasks = list_tasks(category_filter=state["category"])
-
         buckets: dict[str, list[TaskDTO]] = {
             "urgent": [],
             "todo": [],
@@ -316,8 +394,10 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         buckets["urgent"] = sort_kanban_urgent(buckets["urgent"])
         buckets["todo"] = sort_kanban_todo(buckets["todo"])
         buckets["todo_no_date"] = sort_kanban_no_date(buckets["todo_no_date"])
+        return buckets
 
-        board_container.clear()
+    def render_kanban_board(buckets: dict[str, list[TaskDTO]]) -> None:
+        board_container = ui.row().classes("w-full q-col-gutter-md items-start")
         columns_spec = [
             ("urgent", "EN RETARD / URGENT", COLUMN_URGENT_BADGE),
             ("todo", "À FAIRE", COLUMN_TODO_BADGE),
@@ -365,12 +445,75 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                             for task in items:
                                 render_task_card(task, col_key)
 
+    def render_list_view(buckets: dict[str, list[TaskDTO]]) -> None:
+        active_tasks = (
+            buckets["urgent"] + buckets["todo"] + buckets["todo_no_date"]
+        )
+        sorted_tasks = sort_list_view_tasks(active_tasks)
+        batch_counts: dict[tuple, int] = {}
+
+        with ui.column().classes("w-full bg-white rounded-borders").style(
+            "border: 1px solid #e5e7eb;"
+        ):
+            with ui.row().classes(
+                "w-full items-center p-3 bg-gray-50 border-b border-gray-200 "
+                "text-caption text-grey-7 font-medium gap-3"
+            ):
+                ui.element("div").classes("w-2 shrink-0")
+                ui.label("Cat.").classes("shrink-0")
+                ui.label("Titre").classes("col")
+                ui.label("Échéance").classes("shrink-0")
+                ui.label("Suggestion").classes("col-grow").style("max-width: 280px")
+                ui.label("Actions").classes("shrink-0 text-right").style(
+                    "min-width: 72px"
+                )
+
+            if not sorted_tasks:
+                ui.label("Aucune tâche active").classes(
+                    "text-grey-5 text-caption q-pa-md"
+                )
+                return
+
+            for task in sorted_tasks:
+                batch_key = kanban_batch_sort_key(task)
+                seen = batch_counts.get(batch_key, 0)
+                is_child = seen > 0
+                batch_counts[batch_key] = seen + 1
+                render_list_row(task, is_child=is_child)
+
+    @ui.refreshable
+    def render_tasks_workspace() -> None:
+        vue_mode, set_vue_mode = ui.state("kanban")
+        buckets = _load_task_buckets()
+
+        tasks_workspace_container.clear()
+        with tasks_workspace_container:
+            with ui.row().classes("w-full items-center q-gutter-xs q-mb-md"):
+                ui.label("Vue").classes("text-subtitle2 text-grey-7 q-mr-sm")
+                ui.button(
+                    icon="view_kanban",
+                    on_click=lambda: set_vue_mode("kanban"),
+                ).props("flat unelevated round dense").classes(
+                    view_toggle_classes(vue_mode == "kanban")
+                ).tooltip("Kanban")
+                ui.button(
+                    icon="list",
+                    on_click=lambda: set_vue_mode("liste"),
+                ).props("flat unelevated round dense").classes(
+                    view_toggle_classes(vue_mode == "liste")
+                ).tooltip("Liste")
+
+            if vue_mode == "liste":
+                render_list_view(buckets)
+            else:
+                render_kanban_board(buckets)
+
     def refresh_dashboard() -> None:
         refresh_task_statuses()
         render_processing_status.refresh()
         render_manual_banner.refresh()
         render_category_filters.refresh()
-        render_board.refresh()
+        render_tasks_workspace.refresh()
 
     def _detach_queue_listener() -> None:
         queue.remove_listener(on_queue_changed)
@@ -384,7 +527,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 deposit_expansion.value = False
             render_processing_status.refresh()
             render_manual_banner.refresh()
-            render_board.refresh()
+            render_tasks_workspace.refresh()
 
         try:
             run_if_client_alive(
@@ -401,13 +544,13 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     except RuntimeError:
         logger.debug("Impossible d'enregistrer on_disconnect sur le Dashboard.")
 
-    refresh_hooks["kanban"] = render_board.refresh
+    refresh_hooks["kanban"] = render_tasks_workspace.refresh
 
     render_processing_status()
     render_manual_banner()
     render_category_filters()
-    render_board()
+    render_tasks_workspace()
 
     register_tab_refresh("dashboard", refresh_dashboard)
-    ui.timer(60.0, render_board.refresh)
+    ui.timer(60.0, render_tasks_workspace.refresh)
     return refresh_dashboard

@@ -103,6 +103,19 @@ def sort_kanban_no_date(tasks: list[T]) -> list[T]:
     )
 
 
+def sort_list_view_tasks(tasks: list[T]) -> list[T]:
+    """Tri vue Liste : lots regroupés, échéances proches en haut, sans date en bas."""
+    return sorted(
+        tasks,
+        key=lambda task: (
+            kanban_batch_sort_key(task),
+            task.deadline is None,
+            task.deadline or date.max,
+            getattr(task, "id", 0),
+        ),
+    )
+
+
 _WEEKDAYS_FR = (
     "lundi",
     "mardi",

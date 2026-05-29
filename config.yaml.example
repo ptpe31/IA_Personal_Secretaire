@@ -1,0 +1,12 @@
+# Copiez ce fichier vers ~/Trankil-v2/config.yaml et adaptez les valeurs.
+# Le mot de passe d'application Google ne doit PAS figurer ici :
+# définissez SMTP_APP_PASSWORD dans le fichier .env à la racine du projet.
+
+email:
+  enabled: true
+  smtp_server: smtp.gmail.com
+  smtp_port: 587
+  sender_email: ton_email@gmail.com
+  recipient_email: ton_email@gmail.com
+  # Utilisez un mot de passe d'application Google (Compte Google → Sécurité → Mots de passe des applications).
+  # app_password: définir via .env → SMTP_APP_PASSWORD=

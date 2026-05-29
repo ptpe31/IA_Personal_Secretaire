@@ -4,6 +4,7 @@ from datetime import datetime
 
 from app.ui.google_theme import (
     BATCH_PASTEL_PALETTE,
+    batch_border_left_classes,
     batch_color_index,
     task_card_classes,
 )
@@ -43,3 +44,8 @@ def test_document_task_gets_pastel_palette():
 def test_urgent_keeps_left_border_marker():
     classes = task_card_classes(document_id=3, urgent=True)
     assert "trankil-task-card-urgent" in classes
+
+
+def test_batch_border_left_matches_palette_index():
+    assert "border-blue-400" in batch_border_left_classes(12)
+    assert batch_border_left_classes(None) == "border-l-4 border-gray-200"

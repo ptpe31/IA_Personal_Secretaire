@@ -100,6 +100,22 @@ body, .nicegui-content {
     padding-top: 8px;
     margin-top: 12px;
 }
+.trankil-view-toggle {
+    border-radius: 9999px;
+    border: 1px solid #dadce0;
+    background: #ffffff;
+    color: #5f6368;
+    min-height: 32px;
+    min-width: 36px;
+}
+.trankil-view-toggle-active {
+    background: #e8f0fe !important;
+    color: #1967d2 !important;
+    border-color: #aecbfa !important;
+}
+.trankil-list-row {
+    transition: background-color 0.15s ease;
+}
 """
 
 # Quasar utility bundles + Tailwind (NiceGUI tailwind=True)
@@ -113,6 +129,15 @@ BATCH_PASTEL_PALETTE: tuple[str, ...] = (
     "bg-teal-50/40 border-teal-100",      # 3 — Menthe
     "bg-rose-50/40 border-rose-100",      # 4 — Rose poudré
     "bg-orange-50/40 border-orange-100",  # 5 — Abricot
+)
+
+BATCH_BORDER_LEFT: tuple[str, ...] = (
+    "border-l-4 border-blue-400",
+    "border-l-4 border-amber-400",
+    "border-l-4 border-purple-400",
+    "border-l-4 border-teal-400",
+    "border-l-4 border-rose-400",
+    "border-l-4 border-orange-400",
 )
 
 CARD_SHELL = (
@@ -189,11 +214,28 @@ def task_card_classes(
     return classes
 
 
-def render_date_meta(*, icon: str, label: str, value: str) -> None:
+def batch_border_left_classes(
+    document_id: int | None,
+    created_at: datetime | None = None,
+) -> str:
+    """Bordure gauche colorée par lot — vue Liste."""
+    color_idx = batch_color_index(document_id, created_at)
+    if color_idx is None:
+        return "border-l-4 border-gray-200"
+    return BATCH_BORDER_LEFT[color_idx]
+
+
+def view_toggle_classes(active: bool) -> str:
+    base = "trankil-view-toggle"
+    return f"{base} trankil-view-toggle-active" if active else base
+
+
+def render_date_meta(*, icon: str, value: str, label: str = "") -> None:
     """Ligne métadonnée avec icône Material et pilule grise."""
     from nicegui import ui
 
     with ui.row().classes("items-center q-gutter-xs q-mb-xs"):
         ui.icon(icon, size="xs").classes(ICON_MUTED)
-        ui.label(label).classes("text-caption text-grey-6")
+        if label:
+            ui.label(label).classes("text-caption text-grey-6")
         ui.label(value).classes("trankil-date-pill")
