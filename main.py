@@ -9,6 +9,7 @@ import sys
 from nicegui import ui
 
 from app.config import APP_PORT, APP_TITLE, initialize_app_data
+from app.services.inbox_queue import register_inbox_queue_startup
 from app.services.notification_scheduler import start_notification_scheduler
 from app.ui.dashboard_view import create_dashboard_view
 from app.ui.ged_view import create_ged_view
@@ -67,6 +68,7 @@ def main() -> None:
         sys.exit(1)
 
     ui.page_title(APP_TITLE)
+    register_inbox_queue_startup()
     create_shell()
 
     ui.run(

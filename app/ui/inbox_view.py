@@ -1,12 +1,11 @@
-"""Vue Inbox — drag & drop, collage presse-papiers, split-view."""
+"""Vue Inbox — drag & drop, collage, file d'attente asynchrone."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from nicegui import events, ui
@@ -15,7 +14,8 @@ from app.config import INBOX_PATH
 from app.models.analysis import DocumentAnalysis
 from app.services.calendar_service import try_auto_sync_task
 from app.services.inbox_ingest import extension_from_filename
-from app.services.ollama_client import AnalysisClient, get_analysis_client
+from app.services.inbox_queue import InboxJob, JobStatus, get_inbox_queue
+from app.services.ollama_client import get_analysis_client
 from app.services.task_service import parse_tags_input, validate_inbox_document
 from app.utils.dates import parse_optional_date
 from app.utils.file_preview import is_allowed_extension, preview_data_url, register_heif_support
@@ -24,26 +24,33 @@ logger = logging.getLogger(__name__)
 
 ACCEPT_MIME = ".pdf,.png,.jpg,.jpeg,.webp,.heic"
 
+_STATUS_LABELS = {
+    JobStatus.QUEUED: ("schedule", "En attente", "grey-7"),
+    JobStatus.PROCESSING: ("hourglass_top", "Analyse en cours…", "orange-9"),
+    JobStatus.READY: ("check_circle", "Prêt à valider", "positive"),
+    JobStatus.FAILED: ("error", "Échec", "negative"),
+}
+
 
 @dataclass
 class InboxState:
-    """État de la session Inbox courante."""
-
-    file_path: Path | None = None
-    analysis: DocumentAnalysis | None = None
-    client: AnalysisClient = field(default_factory=get_analysis_client)
+    active_job_id: str | None = None
+    form_job_id: str | None = None
 
 
 def create_inbox_view() -> None:
-    """Construit la Vue 1 Inbox (spec §5)."""
+    """Construit la Vue 1 Inbox avec file d'attente background."""
     register_heif_support()
     state = InboxState()
+    queue = get_inbox_queue()
 
     ui.label("Inbox").classes("text-h5 q-mb-sm")
     ui.label(
-        "Déposez un fichier, ou collez une capture d'écran (⌘V) après avoir cliqué "
-        "dans la zone de collage."
+        "Déposez ou collez plusieurs documents : chaque analyse Ollama passe en "
+        "arrière-plan pendant que vous continuez."
     ).classes("text-body2 text-grey-7 q-mb-md")
+
+    queue_badge = ui.label("").classes("text-caption text-primary q-mb-sm")
 
     mock_banner = ui.row().classes(
         "w-full q-pa-sm q-mb-md rounded-borders bg-orange-2 text-orange-10 items-center"
@@ -53,16 +60,17 @@ def create_inbox_view() -> None:
         mock_label = ui.label("").classes("text-body2")
     mock_banner.set_visibility(False)
 
+    client = get_analysis_client()
+
     def refresh_mock_banner() -> None:
-        if state.client.is_mock:
-            mock_label.text = state.client.warning_message or "Mode démo — Ollama non disponible."
+        if client.is_mock:
+            mock_label.text = client.warning_message or "Mode démo — Ollama non disponible."
             mock_banner.set_visibility(True)
         else:
             mock_banner.set_visibility(False)
 
     refresh_mock_banner()
 
-    # --- Zone collage presse-papiers ---
     with ui.card().classes(
         "w-full q-mb-sm q-pa-md trankil-paste-zone cursor-pointer"
     ).props("flat bordered tabindex=0") as paste_zone:
@@ -74,7 +82,6 @@ def create_inbox_view() -> None:
                     "text-caption text-grey-7"
                 )
 
-    # --- Zone upload (drag & drop inchangé) ---
     with ui.card().classes("w-full q-mb-md"):
         ui.label("Glisser-déposer un fichier").classes("text-subtitle1 q-mb-sm")
         upload = ui.upload(
@@ -83,7 +90,8 @@ def create_inbox_view() -> None:
             max_files=1,
         ).props(f'accept="{ACCEPT_MIME}" bordered flat').classes("w-full")
 
-    # --- Split view ---
+    queue_container = ui.column().classes("w-full q-mb-md")
+
     preview_container = ui.column().classes("w-full")
     form_container = ui.column().classes("w-full")
 
@@ -91,21 +99,26 @@ def create_inbox_view() -> None:
         with ui.card().classes("col-grow").style("min-width: 45%; max-width: 55%"):
             ui.label("Aperçu du document").classes("text-subtitle1 q-mb-sm")
             with preview_container:
-                ui.label("Aucun document — déposez ou collez un fichier.").classes(
+                ui.label("Sélectionnez un document dans la file ou ajoutez-en un.").classes(
                     "text-grey-6 q-pa-lg text-center w-full"
                 )
 
         with ui.card().classes("col-grow").style("min-width: 45%"):
             ui.label("Fiche d'analyse").classes("text-subtitle1 q-mb-sm")
             with form_container:
-                ui.label("Les champs apparaîtront après l'analyse.").classes("text-grey-6")
+                ui.label("Les champs apparaîtront quand l'analyse sera prête.").classes(
+                    "text-grey-6"
+                )
 
     form_refs: dict[str, object] = {}
 
-    def clear_form() -> None:
-        form_container.clear()
-        with form_container:
-            ui.label("Analyse en cours…").classes("text-grey-7")
+    def update_queue_badge() -> None:
+        pending = queue.pending_count()
+        if pending:
+            queue_badge.text = f"{pending} analyse(s) en cours ou en attente"
+            queue_badge.set_visibility(True)
+        else:
+            queue_badge.set_visibility(False)
 
     def render_preview(path: Path) -> None:
         preview_container.clear()
@@ -119,10 +132,44 @@ def create_inbox_view() -> None:
                 ui.label(f"Preview indisponible pour {path.name}").classes("text-negative")
             ui.label(path.name).classes("text-caption text-grey-7 q-mt-sm")
 
-    def render_form(analysis: DocumentAnalysis) -> None:
+    def render_form_for_job(job: InboxJob) -> None:
         form_container.clear()
         form_refs.clear()
+        state.form_job_id = job.id
 
+        if job.status == JobStatus.QUEUED:
+            position = queue.queue_position(job.id)
+            with form_container:
+                ui.label(f"En attente — position {position} dans la file.").classes(
+                    "text-grey-7 q-pa-md"
+                )
+            return
+
+        if job.status == JobStatus.PROCESSING:
+            with form_container:
+                with ui.row().classes("items-center q-gutter-sm q-pa-md"):
+                    ui.spinner("dots", size="md", color="primary")
+                    ui.label("Analyse Ollama en arrière-plan…").classes("text-body1")
+                ui.label("Vous pouvez ajouter d'autres documents pendant ce temps.").classes(
+                    "text-caption text-grey-7"
+                )
+            return
+
+        if job.status == JobStatus.FAILED:
+            with form_container:
+                ui.label("L'analyse a échoué.").classes("text-negative text-subtitle2")
+                ui.label(job.error or "Erreur inconnue").classes("text-caption q-mb-md")
+                ui.button(
+                    "Retirer de la file",
+                    icon="delete",
+                    on_click=lambda: remove_job(job.id),
+                ).props("flat color=negative")
+            return
+
+        if job.analysis is None:
+            return
+
+        analysis = job.analysis
         with form_container:
             form_refs["title"] = ui.input("Titre / Action", value=analysis.title).classes("w-full")
 
@@ -161,81 +208,127 @@ def create_inbox_view() -> None:
                 "text-caption text-grey-7 q-mb-md"
             )
 
-            def handle_validate() -> None:
-                if state.file_path is None or not state.file_path.is_file():
-                    ui.notify("Aucun document à valider.", type="warning")
-                    return
-                try:
-                    title = str(form_refs["title"].value or "").strip()
-                    date_emission = parse_optional_date(str(form_refs["date_emission"].value))
-                    if date_emission is None:
-                        raise ValueError("La date d'émission est obligatoire.")
-                    date_event = parse_optional_date(str(form_refs["date_event"].value))
-                    deadline = parse_optional_date(str(form_refs["deadline"].value))
-                    category = str(form_refs["category"].value)
-                    tags = parse_tags_input(str(form_refs["tags"].value or ""))
-                    raw_summary = str(form_refs["raw_summary"].value or "")
-
-                    task_id = validate_inbox_document(
-                        state.file_path,
-                        title=title,
-                        date_emission=date_emission,
-                        date_event=date_event,
-                        deadline=deadline,
-                        category=category,
-                        tags=tags,
-                        raw_summary=raw_summary,
-                    )
-                    state.file_path = None
-                    state.analysis = None
-                    ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
-                    if try_auto_sync_task(task_id):
-                        ui.notify(
-                            "Synchronisé automatiquement avec Google Calendar.",
-                            type="positive",
-                        )
-                    preview_container.clear()
-                    with preview_container:
-                        ui.label("Document classé. Déposez ou collez un nouveau fichier.").classes(
-                            "text-positive q-pa-lg text-center w-full"
-                        )
-                    form_container.clear()
-                    with form_container:
-                        ui.label("En attente d'un nouveau document.").classes("text-grey-6")
-                except Exception as exc:
-                    logger.exception("Validation échouée")
-                    ui.notify(f"Erreur lors de la validation : {exc}", type="negative")
-
             ui.button(
                 "Valider et Classer",
                 icon="check",
-                on_click=handle_validate,
+                on_click=lambda: handle_validate(job.id),
             ).props("color=primary unelevated").classes("w-full")
 
-    async def ingest_inbox_file(dest: Path, filename: str, *, source: str = "upload") -> None:
-        """Pipeline commun : preview → analyse Ollama → formulaire."""
-        state.file_path = dest
-        clear_form()
-        render_preview(dest)
+    def load_job(job_id: str) -> None:
+        job = queue.get_job(job_id)
+        if job is None:
+            return
+        state.active_job_id = job_id
+        render_preview(job.file_path)
+        render_form_for_job(job)
+        render_queue.refresh()
 
-        label = "Collage" if source == "paste" else "Import"
-        ui.notify(f"{label} de « {filename} » — analyse en cours…", type="ongoing")
-
-        try:
-            analysis = await asyncio.to_thread(state.client.analyze_document, dest)
-        except Exception as exc:
-            logger.exception("Analyse échouée")
-            ui.notify(f"Analyse échouée : {exc}", type="negative")
+    def remove_job(job_id: str) -> None:
+        queue.remove_job(job_id)
+        if state.active_job_id == job_id:
+            state.active_job_id = None
+            state.form_job_id = None
+            preview_container.clear()
+            with preview_container:
+                ui.label("Sélectionnez un document dans la file.").classes("text-grey-6 q-pa-lg")
             form_container.clear()
             with form_container:
-                ui.label("L'analyse a échoué. Réessayez ou vérifiez Ollama.").classes(
-                    "text-negative"
-                )
-            return
+                ui.label("En attente d'une sélection.").classes("text-grey-6")
+        render_queue.refresh()
+        update_queue_badge()
 
-        state.analysis = analysis
-        render_form(analysis)
-        ui.notify("Analyse terminée.", type="positive")
+    def handle_validate(job_id: str) -> None:
+        job = queue.get_job(job_id)
+        if job is None or job.status != JobStatus.READY:
+            ui.notify("Document non prêt à valider.", type="warning")
+            return
+        if state.form_job_id != job_id:
+            ui.notify("Ouvrez ce document avant de valider.", type="warning")
+            return
+        try:
+            title = str(form_refs["title"].value or "").strip()
+            date_emission = parse_optional_date(str(form_refs["date_emission"].value))
+            if date_emission is None:
+                raise ValueError("La date d'émission est obligatoire.")
+            date_event = parse_optional_date(str(form_refs["date_event"].value))
+            deadline = parse_optional_date(str(form_refs["deadline"].value))
+            category = str(form_refs["category"].value)
+            tags = parse_tags_input(str(form_refs["tags"].value or ""))
+            raw_summary = str(form_refs["raw_summary"].value or "")
+
+            task_id = validate_inbox_document(
+                job.file_path,
+                title=title,
+                date_emission=date_emission,
+                date_event=date_event,
+                deadline=deadline,
+                category=category,
+                tags=tags,
+                raw_summary=raw_summary,
+            )
+            ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
+            if try_auto_sync_task(task_id):
+                ui.notify("Synchronisé automatiquement avec Google Calendar.", type="positive")
+            remove_job(job_id)
+        except Exception as exc:
+            logger.exception("Validation échouée")
+            ui.notify(f"Erreur lors de la validation : {exc}", type="negative")
+
+    def on_queue_changed() -> None:
+        render_queue.refresh()
+        update_queue_badge()
+        if state.active_job_id:
+            job = queue.get_job(state.active_job_id)
+            if job:
+                render_form_for_job(job)
+
+    @ui.refreshable
+    def render_queue() -> None:
+        queue_container.clear()
+        jobs = queue.list_jobs()
+        with queue_container:
+            if not jobs:
+                return
+            with ui.card().classes("w-full q-pa-sm"):
+                ui.label("File d'analyse").classes("text-subtitle1 q-mb-sm")
+                for job in reversed(jobs):
+                    icon, label, color = _STATUS_LABELS[job.status]
+                    is_active = job.id == state.active_job_id
+                    row_cls = "items-center q-gutter-sm q-py-xs rounded-borders q-px-xs"
+                    if is_active:
+                        row_cls += " bg-blue-1"
+
+                    with ui.row().classes(row_cls):
+
+                        def open_job(jid: str = job.id) -> None:
+                            load_job(jid)
+
+                        ui.button(icon=icon, on_click=open_job).props(
+                            f"flat dense round color={color}"
+                        )
+                        with ui.column().classes("col cursor-pointer").on("click", open_job):
+                            ui.label(job.filename).classes("text-body2 ellipsis")
+                            ui.label(label).classes(f"text-caption text-{color}")
+                        if job.status in (JobStatus.READY, JobStatus.FAILED):
+                            ui.button(
+                                icon="close",
+                                on_click=lambda jid=job.id: remove_job(jid),
+                            ).props("flat dense round size=sm").tooltip("Retirer")
+
+    def enqueue_file(dest: Path, filename: str, *, source: str) -> None:
+        job = queue.enqueue(dest, filename, source=source)
+        position = queue.queue_position(job.id)
+        label = "Collage" if source == "paste" else "Import"
+        ui.notify(
+            f"{label} « {filename} » — ajouté à la file (position {position}).",
+            type="ongoing",
+            timeout=4000,
+        )
+        upload.reset()
+        render_queue.refresh()
+        update_queue_badge()
+        if state.active_job_id is None:
+            load_job(job.id)
 
     async def process_upload(e: events.UploadEventArguments) -> None:
         filename = e.file.name or "document"
@@ -257,7 +350,7 @@ def create_inbox_view() -> None:
             return
 
         source = "paste" if filename.startswith("paste_") else "upload"
-        await ingest_inbox_file(dest, filename, source=source)
+        enqueue_file(dest, filename, source=source)
 
     upload.on_upload(process_upload)
 
@@ -302,13 +395,10 @@ def create_inbox_view() -> None:
                         form.append('file', blob, `paste_${{Date.now()}}.${{ext}}`);
 
                         try {{
-                            const response = await fetch(window.__trankilUploadUrl, {{
+                            await fetch(window.__trankilUploadUrl, {{
                                 method: 'POST',
                                 body: form,
                             }});
-                            if (!response.ok) {{
-                                console.error('Trankil paste upload failed', response.status);
-                            }}
                         }} catch (error) {{
                             console.error('Trankil paste error', error);
                         }}
@@ -320,10 +410,8 @@ def create_inbox_view() -> None:
         )
 
     ui.timer(0.2, setup_clipboard_paste, once=True)
+    ui.timer(2.0, refresh_mock_banner, once=True)
 
-    async def check_ollama_later() -> None:
-        await asyncio.sleep(2)
-        state.client = get_analysis_client()
-        refresh_mock_banner()
-
-    ui.timer(0.1, check_ollama_later, once=True)
+    queue.add_listener(on_queue_changed)
+    render_queue()
+    update_queue_badge()

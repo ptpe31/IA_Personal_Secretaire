@@ -26,9 +26,13 @@ Ou double-clic sur `start.command`.
 
 1. Capture d'écran (⌘⇧4) ou copie d'image depuis Mail
 2. Onglet **Inbox** → cliquer la zone **Coller une capture**
-3. **⌘V** — l'analyse démarre comme pour un glisser-déposer
+3. **⌘V** — le document est ajouté à la **file d'analyse**
 
 Les PDF et fichiers restent en **glisser-déposer** (ou bouton Choisir).
+
+### File d'analyse (arrière-plan)
+
+Chaque dépôt ou collage est traité **en file** par Ollama (un document à la fois). Vous pouvez en ajouter plusieurs sans attendre : notification immédiate, badge de suivi, popup à la fin de chaque analyse.
 
 ## Structure données
 
