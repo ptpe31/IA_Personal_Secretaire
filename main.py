@@ -9,6 +9,7 @@ import sys
 from nicegui import ui
 
 from app.config import APP_PORT, APP_TITLE, initialize_app_data
+from app.ui.dashboard_view import create_dashboard_view
 from app.ui.inbox_view import create_inbox_view
 
 logging.basicConfig(
@@ -42,7 +43,7 @@ def create_shell() -> None:
                 create_inbox_view()
 
             with ui.tab_panel(dashboard_tab):
-                ui.label("Tableau de bord Kanban — Phase 2").classes("text-h6 text-grey-7")
+                create_dashboard_view()
 
             with ui.tab_panel(ged_tab):
                 ui.label("GED / Archives — Phase 3").classes("text-h6 text-grey-7")

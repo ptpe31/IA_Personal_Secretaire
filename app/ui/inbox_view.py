@@ -13,6 +13,8 @@ from nicegui import events, ui
 from app.config import INBOX_PATH
 from app.models.analysis import DocumentAnalysis
 from app.services.ollama_client import AnalysisClient, get_analysis_client
+from app.services.task_service import parse_tags_input, validate_inbox_document
+from app.utils.dates import parse_optional_date
 from app.utils.file_preview import is_allowed_extension, preview_data_url, register_heif_support
 
 logger = logging.getLogger(__name__)
@@ -144,13 +146,50 @@ def create_inbox_view() -> None:
                 "text-caption text-grey-7 q-mb-md"
             )
 
+            def handle_validate() -> None:
+                if state.file_path is None or not state.file_path.is_file():
+                    ui.notify("Aucun document à valider.", type="warning")
+                    return
+                try:
+                    title = str(form_refs["title"].value or "").strip()
+                    date_emission = parse_optional_date(str(form_refs["date_emission"].value))
+                    if date_emission is None:
+                        raise ValueError("La date d'émission est obligatoire.")
+                    date_event = parse_optional_date(str(form_refs["date_event"].value))
+                    deadline = parse_optional_date(str(form_refs["deadline"].value))
+                    category = str(form_refs["category"].value)
+                    tags = parse_tags_input(str(form_refs["tags"].value or ""))
+                    raw_summary = str(form_refs["raw_summary"].value or "")
+
+                    task_id = validate_inbox_document(
+                        state.file_path,
+                        title=title,
+                        date_emission=date_emission,
+                        date_event=date_event,
+                        deadline=deadline,
+                        category=category,
+                        tags=tags,
+                        raw_summary=raw_summary,
+                    )
+                    state.file_path = None
+                    state.analysis = None
+                    ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
+                    preview_container.clear()
+                    with preview_container:
+                        ui.label("Document classé. Déposez un nouveau fichier.").classes(
+                            "text-positive q-pa-lg text-center w-full"
+                        )
+                    form_container.clear()
+                    with form_container:
+                        ui.label("En attente d'un nouveau document.").classes("text-grey-6")
+                except Exception as exc:
+                    logger.exception("Validation échouée")
+                    ui.notify(f"Erreur lors de la validation : {exc}", type="negative")
+
             ui.button(
                 "Valider et Classer",
                 icon="check",
-                on_click=lambda: ui.notify(
-                    "Validation GED — implémentée au Sprint 2 (Phase 1 suite).",
-                    type="info",
-                ),
+                on_click=handle_validate,
             ).props("color=primary unelevated").classes("w-full")
 
     async def process_upload(e: events.UploadEventArguments) -> None:
@@ -166,8 +205,7 @@ def create_inbox_view() -> None:
         INBOX_PATH.mkdir(parents=True, exist_ok=True)
 
         try:
-            content = e.content.read()
-            dest.write_bytes(content)
+            await e.file.save(dest)
         except Exception as exc:
             logger.exception("Erreur sauvegarde inbox")
             ui.notify(f"Erreur lors de la sauvegarde : {exc}", type="negative")
