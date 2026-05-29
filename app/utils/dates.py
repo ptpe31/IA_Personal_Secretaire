@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Literal, TypeVar
 
 KanbanColumn = Literal["archived", "urgent", "todo", "todo_no_date"]
+
+T = TypeVar("T")
 
 
 def parse_optional_date(value: str | None) -> date | None:
@@ -50,6 +52,16 @@ def format_date_fr(value: date | None) -> str:
     if value is None:
         return "—"
     return value.strftime("%d/%m/%Y")
+
+
+def sort_kanban_urgent(tasks: list[T]) -> list[T]:
+    """Tri « En retard / urgent » : deadline la plus ancienne en premier."""
+    return sorted(tasks, key=lambda task: task.deadline or date.max)
+
+
+def sort_kanban_todo(tasks: list[T]) -> list[T]:
+    """Tri « À faire » : échéance la plus proche en haut, sans deadline en bas."""
+    return sorted(tasks, key=lambda task: (task.deadline is None, task.deadline or date.max))
 
 
 _WEEKDAYS_FR = (

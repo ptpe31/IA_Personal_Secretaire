@@ -42,6 +42,8 @@ def add_calendar_sync_button(
         except Exception as exc:
             ui.notify(f"Sync Calendar échouée : {exc}", type="negative")
 
-    ui.button(icon="event", on_click=sync).props("dense flat round size=sm").tooltip(
+    ui.button(icon="event", on_click=sync).props("flat round dense size=sm").classes(
+        "trankil-icon-btn"
+    ).tooltip(
         "Synchroniser l'agenda"
     )

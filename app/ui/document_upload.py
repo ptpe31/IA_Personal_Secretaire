@@ -23,10 +23,12 @@ ACCEPT_MIME = ".pdf,.png,.jpg,.jpeg,.webp,.heic"
 def create_paste_zone() -> ui.card:
     """Carte « Coller une image » activable au clic / focus."""
     with ui.card().classes(
-        "w-full q-pa-md trankil-paste-zone cursor-pointer"
-    ).props("flat bordered tabindex=0") as paste_zone:
+        "w-full q-pa-md trankil-paste-zone cursor-pointer bg-white rounded-borders"
+    ).props("flat bordered tabindex=0").style(
+        "border: 1px solid #e5e7eb; border-radius: 12px;"
+    ) as paste_zone:
         with ui.row().classes("items-center q-gutter-sm"):
-            ui.icon("content_paste", size="md").classes("text-primary")
+            ui.icon("content_paste", size="md").classes("text-blue-7")
             with ui.column():
                 ui.label("Coller une capture ou une image").classes("text-subtitle2")
                 ui.label("Cliquez ici, puis ⌘V (Mac) ou Ctrl+V").classes(
@@ -172,8 +174,14 @@ def create_document_intake(
                 paste_zone = create_paste_zone()
                 paste_zone.classes(add="full-height flex flex-center")
             with ui.column().classes("col flex"):
-                with ui.card().classes("w-full full-height q-pa-md").props("flat bordered"):
-                    ui.label("Glisser-déposer un fichier").classes("text-subtitle2 q-mb-sm")
+                with ui.card().classes(
+                    "w-full full-height q-pa-md bg-white rounded-borders"
+                ).props("flat bordered").style(
+                    "border: 1px solid #e5e7eb; border-radius: 12px;"
+                ):
+                    ui.label("Glisser-déposer un fichier").classes(
+                        "text-subtitle2 text-weight-medium text-grey-9 q-mb-sm"
+                    )
                     upload = create_document_upload(compact=compact, on_enqueued=on_enqueued)
             with ui.column().classes("col flex"):
                 third_column()
@@ -183,8 +191,14 @@ def create_document_intake(
                 paste_zone = create_paste_zone()
                 paste_zone.classes(add="full-height flex flex-center")
             with ui.column().classes("col flex"):
-                with ui.card().classes("w-full full-height q-pa-md").props("flat bordered"):
-                    ui.label("Glisser-déposer un fichier").classes("text-subtitle2 q-mb-sm")
+                with ui.card().classes(
+                    "w-full full-height q-pa-md bg-white rounded-borders"
+                ).props("flat bordered").style(
+                    "border: 1px solid #e5e7eb; border-radius: 12px;"
+                ):
+                    ui.label("Glisser-déposer un fichier").classes(
+                        "text-subtitle2 text-weight-medium text-grey-9 q-mb-sm"
+                    )
                     upload = create_document_upload(compact=compact, on_enqueued=on_enqueued)
     else:
         paste_zone = create_paste_zone()

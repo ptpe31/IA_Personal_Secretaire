@@ -13,8 +13,12 @@ from app.utils.recurrence import RECURRENCE_SELECT_OPTIONS, pattern_from_label
 
 def create_manual_task_form(*, on_created: Callable[[], None]) -> None:
     """Carte compacte « Création manuelle / Routine » pour le Dashboard."""
-    with ui.card().classes("w-full full-height q-pa-md").props("flat bordered"):
-        ui.label("Création manuelle / Routine").classes("text-subtitle2 q-mb-sm")
+    with ui.card().classes(
+        "w-full full-height q-pa-md bg-white rounded-borders"
+    ).props("flat bordered").style("border: 1px solid #e5e7eb; border-radius: 12px;"):
+        ui.label("Création manuelle / Routine").classes(
+            "text-subtitle2 text-weight-medium text-grey-9 q-mb-sm"
+        )
 
         title_input = ui.input(
             "Titre / Action",
@@ -82,4 +86,4 @@ def create_manual_task_form(*, on_created: Callable[[], None]) -> None:
             "Créer la tâche",
             icon="add",
             on_click=submit,
-        ).props("color=primary unelevated").classes("w-full q-mt-sm")
+        ).props("color=blue-7 unelevated no-caps rounded-borders").classes("w-full q-mt-sm")

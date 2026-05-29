@@ -22,7 +22,21 @@ from app.ui.inbox_ui_safe import run_if_client_alive
 from app.ui.manual_task_form import create_manual_task_form
 from app.ui.task_edit_dialog import open_task_edit_dialog
 from app.ui.tab_registry import register_tab_refresh
-from app.utils.dates import compute_kanban_column, format_date_fr
+from app.ui.google_theme import (
+    BADGE_RECURRENCE,
+    CARD_GOOGLE,
+    COLUMN_ARCHIVED_BADGE,
+    COLUMN_TODO_BADGE,
+    COLUMN_URGENT_BADGE,
+    EXPANSION_GOOGLE,
+    ICON_BTN,
+    ICON_BTN_DANGER,
+    SUGGESTION_BOX,
+    category_badge_classes,
+    chip_classes,
+    render_date_meta,
+)
+from app.utils.dates import compute_kanban_column, format_date_fr, sort_kanban_todo, sort_kanban_urgent
 from app.utils.recurrence import RECURRENCE_DISPLAY
 
 logger = logging.getLogger(__name__)
@@ -39,10 +53,10 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     queue = get_inbox_queue()
     state = {"category": "all"}
 
-    ui.label("Tableau de bord").classes("text-h5 q-mb-sm")
+    ui.label("Tableau de bord").classes("text-h5 text-weight-medium text-grey-9 q-mb-xs")
     ui.label(
         "Déposez vos scans et gérez vos tâches — tout au même endroit."
-    ).classes("text-body2 text-grey-7 q-mb-md")
+    ).classes("text-body2 text-grey-6 q-mb-md")
 
     refresh_hooks: dict[str, Callable[[], None]] = {"kanban": lambda: None}
 
@@ -50,9 +64,9 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         "Dépôt de documents & Statut",
         icon="cloud_upload",
         value=True,
-    ).classes("w-full q-mb-md").props(
-        'header-class="text-weight-bold text-subtitle1 bg-grey-2 q-px-sm rounded-borders"'
-    ).style("border: 1px solid rgba(0,0,0,0.08); border-radius: 4px;") as deposit_expansion:
+    ).classes(EXPANSION_GOOGLE).props(
+        'header-class="text-weight-medium text-subtitle1 text-grey-9 q-px-md q-py-sm"'
+    ) as deposit_expansion:
         with ui.column().classes("w-full q-pa-md q-gutter-sm"):
             create_document_intake(
                 triple_column=True,
@@ -77,14 +91,16 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         if job is None:
             return
         with status_container:
-            with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
-                ui.spinner("line", size="lg", color="primary")
+            with ui.row().classes(
+                "items-center q-gutter-sm q-mt-sm q-pa-sm bg-blue-1 rounded-borders"
+            ):
+                ui.spinner("line", size="lg", color="blue-7")
                 if job.status == JobStatus.QUEUED:
                     text = f"En attente — {job.filename}"
                 else:
                     engine = describe_analysis_engine(queue.client)
                     text = f"Analyse de {job.filename} par {engine} en cours…"
-                ui.label(text).classes("text-body2")
+                ui.label(text).classes("text-body2 text-blue-9")
 
     @ui.refreshable
     def render_manual_banner() -> None:
@@ -100,13 +116,15 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         with manual_banner_container:
             if failed_count > 0:
                 doc_label = "document" if failed_count == 1 else "documents"
-                with ui.card().classes("w-full q-pa-sm bg-red-1"):
+                with ui.card().classes(
+                    "w-full q-pa-sm bg-red-1 rounded-borders border border-red-2"
+                ):
                     with ui.row().classes("items-center q-gutter-sm flex-wrap"):
-                        ui.icon("error", color="negative")
+                        ui.icon("error", color="red-7")
                         ui.label(
-                            f"❌ L'analyse IA a échoué pour {failed_count} {doc_label}. "
+                            f"L'analyse IA a échoué pour {failed_count} {doc_label}. "
                             "Vérifiez vos clés API (Paramètres) ou rouvrez l'Inbox."
-                        ).classes("text-body2")
+                        ).classes("text-body2 text-grey-9")
 
                         def go_inbox_error() -> None:
                             if switch_to_inbox:
@@ -115,32 +133,34 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         ui.button(
                             "Voir le détail dans l'Inbox",
                             on_click=go_inbox_error,
-                        ).props("flat dense color=negative no-caps")
+                        ).props("flat dense no-caps color=red-7")
 
             if ready_count > 0:
                 doc_label = "document" if ready_count == 1 else "documents"
                 verb = "nécessite" if ready_count == 1 else "nécessitent"
-                with ui.card().classes("w-full q-pa-sm bg-orange-1"):
+                with ui.card().classes(
+                    "w-full q-pa-sm bg-amber-1 rounded-borders border border-amber-3"
+                ):
                     with ui.row().classes("items-center q-gutter-sm flex-wrap"):
-                        ui.icon("warning", color="orange-10")
+                        ui.icon("warning", color="amber-10")
                         ui.label(
-                            f"⚠️ {ready_count} {doc_label} {verb} votre validation manuelle."
-                        ).classes("text-body2")
+                            f"{ready_count} {doc_label} {verb} votre validation manuelle."
+                        ).classes("text-body2 text-grey-9")
 
                         def go_inbox() -> None:
                             if switch_to_inbox:
                                 switch_to_inbox()
 
                         ui.button(
-                            "Cliquez ici pour aller à l'Inbox",
+                            "Aller à l'Inbox",
                             on_click=go_inbox,
-                        ).props("flat dense color=primary no-caps")
+                        ).props("flat dense no-caps color=blue-7")
 
     @ui.refreshable
     def render_category_filters() -> None:
         filter_row.clear()
         with filter_row:
-            ui.label("Filtrer :").classes("text-subtitle2")
+            ui.label("Filtrer").classes("text-subtitle2 text-grey-7 q-mr-sm")
             for key, label in CATEGORY_OPTIONS.items():
 
                 def set_category(k: str = key) -> None:
@@ -151,19 +171,17 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 ui.button(
                     label,
                     on_click=set_category,
-                ).props(
-                    "dense"
-                    + (" color=primary unelevated" if state["category"] == key else " outline")
+                ).props("flat unelevated no-caps").classes(
+                    chip_classes(key, state["category"])
                 )
 
     def render_task_card(task: TaskDTO, column: str) -> None:
         cat_label = "Pro" if task.category == "pro" else "Perso"
-        cat_color = "blue-8" if task.category == "pro" else "green-8"
         urgent = column == "urgent"
 
-        card_classes = "w-full q-mb-sm q-pl-md q-pr-sm q-py-sm"
+        card_classes = CARD_GOOGLE
         if urgent:
-            card_classes += " bg-red-1 border-left-4 border-red q-pl-lg"
+            card_classes += " trankil-task-card-urgent"
 
         def confirm_delete(t: TaskDTO = task) -> None:
             with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
@@ -189,30 +207,40 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
             dialog.open()
 
-        with ui.card().classes(card_classes):
-            with ui.row().classes("items-center q-gutter-xs q-mb-xs"):
-                ui.badge(cat_label).props(f"color={cat_color}")
-                ui.label(task.title).classes("text-subtitle2 col")
+        with ui.card().classes(card_classes).props("flat"):
+            with ui.row().classes("items-start q-gutter-xs q-mb-sm"):
+                ui.label(cat_label).classes(category_badge_classes(task.category))
+                ui.label(task.title).classes(
+                    "text-subtitle2 text-weight-medium text-grey-9 col"
+                )
                 if task.recurrence_pattern:
                     label = RECURRENCE_DISPLAY.get(task.recurrence_pattern, "Routine")
-                    ui.badge(f"🔁 {label}").props("color=purple-4").classes("text-caption")
+                    ui.label(f"🔁 {label}").classes(BADGE_RECURRENCE)
 
-            ui.label(f"• Reçu le : {format_date_fr(task.date_emission)}").classes(
-                "text-caption"
+            render_date_meta(
+                icon="mail",
+                label="Reçu le",
+                value=format_date_fr(task.date_emission),
             )
-            ui.label(f"• Date événement : {format_date_fr(task.date_event)}").classes(
-                "text-caption"
+            render_date_meta(
+                icon="calendar_today",
+                label="Événement",
+                value=format_date_fr(task.date_event),
             )
-            ui.label(f"• Deadline : {format_date_fr(task.deadline)}").classes(
-                "text-caption"
+            render_date_meta(
+                icon="alarm",
+                label="Deadline",
+                value=format_date_fr(task.deadline),
             )
 
             if task.suggestion:
-                ui.label(f"💡 {task.suggestion}").classes(
-                    "text-caption text-amber-10 italic q-mt-xs"
-                ).style("color: #b45309;")
+                with ui.row().classes(SUGGESTION_BOX + " q-mt-sm items-start q-gutter-sm"):
+                    ui.icon("lightbulb", size="sm").classes("text-amber-9")
+                    ui.label(task.suggestion).classes("col text-body2")
 
-            with ui.row().classes("items-center q-gutter-xs q-mt-xs w-full flex-wrap"):
+            with ui.row().classes(
+                "items-center q-gutter-sm w-full flex-wrap trankil-card-actions"
+            ):
                 if column == "archived":
 
                     def uncheck() -> None:
@@ -222,8 +250,8 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         render_board.refresh()
 
                     ui.button("Réouvrir", icon="undo", on_click=uncheck).props(
-                        "dense flat size=sm"
-                    )
+                        "flat dense round size=sm no-caps"
+                    ).classes(ICON_BTN)
                 else:
 
                     def mark_done(e, tid: int = task.id) -> None:
@@ -238,7 +266,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                                 ui.notify("Tâche archivée.", type="positive")
                             render_board.refresh()
 
-                    ui.checkbox("Fait", on_change=mark_done)
+                    ui.checkbox("Fait", on_change=mark_done).props("color=green-7")
 
                 ui.button(
                     icon="edit",
@@ -247,14 +275,13 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         render_board.refresh,
                         on_deleted=render_board.refresh,
                     ),
-                ).props("dense flat round size=sm color=primary").tooltip("Modifier")
+                ).props("flat round dense size=sm").classes(ICON_BTN).tooltip("Modifier")
 
                 ui.button(
-                    "Suppr.",
                     icon="delete",
                     on_click=confirm_delete,
-                ).props("dense size=sm color=negative outline").tooltip(
-                    "Supprimer de la base"
+                ).props("flat round dense size=sm").classes(ICON_BTN_DANGER).tooltip(
+                    "Supprimer"
                 )
 
                 if column != "archived":
@@ -278,37 +305,53 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
             )
             buckets[col].append(task)
 
+        buckets["urgent"] = sort_kanban_urgent(buckets["urgent"])
+        buckets["todo"] = sort_kanban_todo(buckets["todo"])
+
         board_container.clear()
         columns_spec = [
-            ("urgent", "EN RETARD / URGENT", "red"),
-            ("todo", "À FAIRE", "primary"),
-            ("archived", "ARCHIVÉ", "green"),
+            ("urgent", "EN RETARD / URGENT", COLUMN_URGENT_BADGE),
+            ("todo", "À FAIRE", COLUMN_TODO_BADGE),
+            ("archived", "ARCHIVÉ", COLUMN_ARCHIVED_BADGE),
         ]
 
         with board_container:
-            for col_key, title, color in columns_spec:
-                with ui.column().classes("col q-pl-xs").style("min-width: 280px"):
-                    ui.label(title).classes(f"text-subtitle1 text-{color} q-mb-sm")
+            for col_key, title, badge_cls in columns_spec:
+                if col_key == "todo":
+                    count = len(buckets["todo"]) + len(buckets["todo_no_date"])
+                else:
+                    count = len(buckets[col_key])
+
+                with ui.column().classes(
+                    "col bg-white rounded-borders q-pa-md q-gutter-sm"
+                ).style(
+                    "min-width: 280px; border: 1px solid #e5e7eb;"
+                ):
+                    with ui.row().classes("items-center q-gutter-sm q-mb-sm"):
+                        ui.label(title).classes(
+                            "text-subtitle2 text-weight-bold text-grey-8"
+                        )
+                        ui.label(str(count)).classes(badge_cls)
 
                     if col_key == "todo":
                         dated = buckets["todo"]
                         undated = buckets["todo_no_date"]
                         if not dated and not undated:
-                            ui.label("Aucune tâche").classes("text-grey-6 text-caption")
+                            ui.label("Aucune tâche").classes("text-grey-5 text-caption")
                         else:
                             for task in dated:
                                 render_task_card(task, "todo")
                             if undated:
                                 ui.separator().classes("q-my-sm")
                                 ui.label("Sans date").classes(
-                                    "text-caption text-grey-7 q-mb-xs"
+                                    "text-caption text-grey-6 q-mb-xs text-weight-medium"
                                 )
                                 for task in undated:
                                     render_task_card(task, "todo_no_date")
                     else:
                         items = buckets[col_key]
                         if not items:
-                            ui.label("Aucune tâche").classes("text-grey-6 text-caption")
+                            ui.label("Aucune tâche").classes("text-grey-5 text-caption")
                         else:
                             for task in items:
                                 render_task_card(task, col_key)

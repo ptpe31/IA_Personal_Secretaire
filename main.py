@@ -14,6 +14,7 @@ from app.services.inbox_queue import register_inbox_queue_startup
 from app.services.notification_scheduler import start_notification_scheduler
 from app.ui.dashboard_view import create_dashboard_view
 from app.ui.ged_view import create_ged_view
+from app.ui.google_theme import PAGE_BG, apply_google_theme
 from app.ui.inbox_view import create_inbox_view
 from app.ui.settings_view import create_settings_view
 from app.ui.tab_registry import refresh_tab
@@ -34,20 +35,28 @@ logger = logging.getLogger(__name__)
 
 
 def create_header() -> None:
-    """En-tête application."""
-    with ui.header().classes("items-center justify-between bg-primary text-white"):
-        with ui.row().classes("items-center q-gutter-sm"):
-            ui.icon("inbox", size="md")
-            ui.label(APP_TITLE).classes("text-h6")
-        ui.label("Local-first · Données sur votre Mac").classes("text-caption")
+    """En-tête blanc style Google Workspace."""
+    with ui.header().classes("trankil-header q-px-md q-py-sm"):
+        with ui.row().classes("w-full items-center justify-between"):
+            with ui.row().classes("items-center q-gutter-sm"):
+                ui.icon("task_alt").classes("text-blue-7").style("font-size: 28px")
+                ui.label(APP_TITLE).classes(
+                    "text-h5 text-weight-medium text-grey-9"
+                ).style("letter-spacing: -0.02em; font-family: inherit")
+            ui.label("Local-first · Données sur votre Mac").classes(
+                "text-caption text-grey-6"
+            )
 
 
 def create_shell() -> None:
-    """Layout principal avec navigation simplifiée V1."""
+    """Layout principal avec navigation pill-shaped."""
+    apply_google_theme()
     create_header()
 
-    with ui.column().classes("w-full q-pa-md"):
-        with ui.tabs().classes("w-full") as tabs:
+    with ui.column().classes(f"w-full q-pa-md {PAGE_BG}"):
+        with ui.tabs().classes("w-full trankil-nav-tabs q-mb-sm").props(
+            "align=left narrow-indicator inline-label no-caps"
+        ) as tabs:
             dashboard_tab = ui.tab("Tableau de bord", icon="dashboard")
             inbox_tab = ui.tab("Inbox", icon="inbox")
             ged_tab = ui.tab("Archives", icon="folder")
@@ -63,7 +72,7 @@ def create_shell() -> None:
             tabs.value = inbox_tab
             refresh_tab("inbox")
 
-        with ui.tab_panels(tabs, value=dashboard_tab).classes("w-full"):
+        with ui.tab_panels(tabs, value=dashboard_tab).classes("w-full bg-transparent"):
             with ui.tab_panel(dashboard_tab):
                 create_dashboard_view(switch_to_inbox=switch_to_inbox)
 

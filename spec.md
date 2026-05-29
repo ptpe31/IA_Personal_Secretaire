@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.6-implemented  
+> **Version** : 0.7-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — multi-IA (Gemini / OpenRouter Éco), fallback Ollama, purge SQLite  
+> **Statut** : V1 fonctionnelle — thème Google Workspace, tri Kanban chronologique, multi-IA (Gemini / OpenRouter Éco)  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -280,6 +280,18 @@ SINON → À FAIRE
 
 **Tâche sans deadline** : reste dans « À FAIRE », affichée dans une sous-section **« Sans date »** en bas de colonne (ne pollue pas le tri chronologique du haut).
 
+**Tri chronologique Kanban** (implémenté dans `app/utils/dates.py`, appliqué dans `dashboard_view.py` à chaque rendu) :
+
+| Colonne | Règle de tri | Justification |
+|---------|--------------|---------------|
+| **EN RETARD / URGENT** | `deadline` **ASC** (plus ancienne en haut) | Une échéance du 01/05 est plus critique qu'une du 28/05 |
+| **À FAIRE** (partie datée) | `deadline` **ASC** (échéance la plus proche en haut) | Attirer le regard sur les actions imminentes |
+| **Sans date** | Toujours **en bas** de « À FAIRE » | `deadline IS NULL` → bucket séparé `todo_no_date` |
+
+Fonctions utilitaires :
+- `sort_kanban_urgent(tasks)` → `sorted(..., key=lambda t: t.deadline or date.max)`
+- `sort_kanban_todo(tasks)` → `sorted(..., key=lambda t: (t.deadline is None, t.deadline or date.max))`
+
 **Marge utilisateur** : la deadline en base est la **date officielle** du document. La marge est gérée par le **système de relance** (alertes J-3 et J-1), pas par une modification de la donnée stockée.
 
 **Multi-tâches** : un même document peut produire plusieurs tâches (ex. courrier avec plusieurs échéances). Toutes partagent le même `document_id` après validation.
@@ -336,7 +348,7 @@ La zone haute est un **accordéon NiceGUI** (`ui.expansion`) pour maximiser l'es
 | Titre | « Dépôt de documents & Statut » |
 | Icône | `cloud_upload` |
 | État par défaut | **Déplié** (`value=True`) au premier chargement |
-| Style en-tête | Texte gras, fond gris clair (`bg-grey-2`), bordure discrète |
+| Style en-tête | Texte gras, fond blanc (`google_theme.py`), bordure discrète |
 | Comportement | Clic sur l'en-tête → repli/dépli animé (Quasar) |
 
 **Auto-dépliage** : si un fichier est en cours d'analyse IA, le panneau se rouvre automatiquement pour afficher le spinner.
@@ -421,10 +433,17 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 
 | Colonne | Contenu | Style |
 |---------|---------|-------|
-| **EN RETARD / URGENT** | Non archivées, deadline passée ou ≤ 48h | Fond rouge, badge urgence |
-| **À FAIRE** | Non archivées, deadline > 48h | Tri deadline ASC |
+| **EN RETARD / URGENT** | Non archivées, deadline passée ou ≤ 48h | Carte bordure rouge gauche, badge urgence |
+| **À FAIRE** | Non archivées, deadline > 48h | Tri **deadline ASC** (proche en haut) |
 | ↳ *Sans date* | Non archivées, `deadline IS NULL` | Sous-section en **bas** de la colonne « À FAIRE » |
-| **ARCHIVÉ** | `completed_at` renseigné | Vert discret |
+| **ARCHIVÉ** | `completed_at` renseigné | Badge vert discret |
+
+**Ordre d'affichage** (post-bucketing, avant rendu) :
+
+1. **Urgent** : deadline la plus ancienne / la plus en retard en **première** position.
+2. **À faire** : deadline future la plus **proche** en haut ; tâches sans deadline reléguées sous le séparateur « Sans date ».
+
+Implémentation : `sort_kanban_urgent()` et `sort_kanban_todo()` dans `app/utils/dates.py` ; tests dans `tests/test_task_status.py`.
 
 ### 5.9 Carte tâche
 
@@ -447,8 +466,27 @@ Interactions :
 ### 5.10 Rafraîchissement
 
 - Recalcul colonne « Urgent » à chaque chargement et toutes les **60 s** (timer NiceGUI)
+- **Re-tri chronologique** des colonnes Urgent et À faire à chaque rafraîchissement Kanban
 - Rafraîchissement à chaque changement d'onglet (`tab_registry.py`)
 - Rafraîchissement Kanban à chaque événement de la file d'analyse, création manuelle ou archivage récurrent
+
+### 5.11 Thème visuel — Google Workspace
+
+Module central : `app/ui/google_theme.py` — palette Google Clean & Bright, injectée via `apply_google_theme()` dans `main.py`.
+
+| Élément | Style |
+|---------|-------|
+| **Fond page** | Gris très clair `#f9fafb` |
+| **Header** | Blanc, icône `task_alt`, titre gris foncé |
+| **Navigation** | Onglets pill-shaped (pilules arrondies, indicateur masqué) |
+| **Filtres catégorie** | Chips `Tout / Pro / Perso` (noir, bleu, vert selon actif) |
+| **Cartes tâche** | Material : coins 16px, ombre légère, bordure `#e5e7eb` |
+| **Carte urgente** | Bordure gauche rouge `#ea4335` |
+| **Métadonnées dates** | Icône grise + pilule grise (`trankil-date-pill`) |
+| **Suggestion IA** | Encart ambre avec icône ampoule |
+| **Actions carte** | Icônes grises discrètes (modifier, supprimer, calendrier) |
+
+Helpers exportés : `CARD_GOOGLE`, `FILTER_CHIP_*`, `category_badge_classes()`, `render_date_meta()`, etc.
 
 ---
 
@@ -784,7 +822,8 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── notification_scheduler.py
 │   │   └── calendar_service.py
 │   ├── ui/
-│   │   ├── dashboard_view.py    # page d'accueil — expansion + Kanban
+│   │   ├── dashboard_view.py    # page d'accueil — expansion + Kanban trié
+│   │   ├── google_theme.py      # thème Google Workspace (CSS + helpers)
 │   │   ├── inbox_view.py        # validation manuelle split-view
 │   │   ├── document_upload.py   # dépôt + collage (2 ou 3 colonnes)
 │   │   ├── manual_task_form.py  # création manuelle / routines
@@ -795,7 +834,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── calendar_button.py
 │   │   └── tab_registry.py
 │   └── utils/
-│       ├── dates.py
+│       ├── dates.py             # colonnes Kanban + tri chronologique
 │       ├── tags.py
 │       ├── slugify.py
 │       ├── file_preview.py
@@ -857,6 +896,8 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Suggestions IA (`suggestion`, `justification_proof`)
 - [x] Tâches manuelles + colonnes récurrence SQLite
 - [x] Cartes Kanban : affichage **date événement**
+- [x] **Tri chronologique Kanban** : urgent (deadline ASC) + à faire (proche en haut, sans date en bas)
+- [x] **Thème Google Workspace** (`google_theme.py`) — header blanc, chips, cartes Material
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -924,6 +965,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Autopilote + bannière validation manuelle.
 - [x] Création manuelle + routines récurrentes depuis le Dashboard.
 - [x] Panneau escamotable « Dépôt de documents & Statut ».
+- [x] Tri chronologique : urgences les plus anciennes en haut ; échéances proches avant les sans date.
 
 ### V1 complète (Phase 4–5) ✅ / 🔄
 
