@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -11,18 +10,19 @@ from pathlib import Path
 from nicegui import events, ui
 
 from app.config import INBOX_PATH
-from app.models.analysis import DocumentAnalysis
+from app.models.analysis import DocumentAnalysisResult
 from app.services.calendar_service import try_auto_sync_task
 from app.services.inbox_ingest import extension_from_filename
 from app.services.inbox_queue import InboxJob, JobStatus, get_inbox_queue
 from app.services.ollama_client import get_analysis_client
-from app.services.task_service import parse_tags_input, validate_inbox_document
+from app.services.task_service import TaskValidationInput, parse_tags_input, validate_inbox_tasks
+from app.ui.document_upload import ACCEPT_MIME, create_paste_zone, wire_clipboard_paste
+from app.ui.inbox_ui_safe import element_client_alive, run_if_client_alive, safe_clear
+from app.ui.tab_registry import register_tab_refresh
 from app.utils.dates import parse_optional_date
 from app.utils.file_preview import is_allowed_extension, preview_data_url, register_heif_support
 
 logger = logging.getLogger(__name__)
-
-ACCEPT_MIME = ".pdf,.png,.jpg,.jpeg,.webp,.heic"
 
 _STATUS_LABELS = {
     JobStatus.QUEUED: ("schedule", "En attente", "grey-7"),
@@ -38,7 +38,15 @@ class InboxState:
     form_job_id: str | None = None
 
 
-def create_inbox_view() -> None:
+def _display_filename(path: Path) -> str:
+    name = path.name
+    prefix, _, rest = name.partition("_")
+    if len(prefix) == 32 and rest:
+        return rest
+    return name
+
+
+def create_inbox_view():
     """Construit la Vue 1 Inbox avec file d'attente background."""
     register_heif_support()
     state = InboxState()
@@ -71,16 +79,8 @@ def create_inbox_view() -> None:
 
     refresh_mock_banner()
 
-    with ui.card().classes(
-        "w-full q-mb-sm q-pa-md trankil-paste-zone cursor-pointer"
-    ).props("flat bordered tabindex=0") as paste_zone:
-        with ui.row().classes("items-center q-gutter-sm"):
-            ui.icon("content_paste", size="md").classes("text-primary")
-            with ui.column():
-                ui.label("Coller une capture ou une image").classes("text-subtitle2")
-                ui.label("Cliquez ici, puis ⌘V (Mac) ou Ctrl+V").classes(
-                    "text-caption text-grey-7"
-                )
+    paste_zone = create_paste_zone()
+    paste_zone.classes(add="q-mb-sm")
 
     with ui.card().classes("w-full q-mb-md"):
         ui.label("Glisser-déposer un fichier").classes("text-subtitle1 q-mb-sm")
@@ -95,18 +95,22 @@ def create_inbox_view() -> None:
     preview_container = ui.column().classes("w-full")
     form_container = ui.column().classes("w-full")
 
-    with ui.row().classes("w-full q-col-gutter-md no-wrap"):
-        with ui.card().classes("col-grow").style("min-width: 45%; max-width: 55%"):
+    with ui.row().classes("w-full q-col-gutter-md items-start"):
+        with ui.card().classes("col-grow").style(
+            "min-width: 42%; max-width: 48%; max-height: 82vh; overflow-y: auto;"
+        ):
             ui.label("Aperçu du document").classes("text-subtitle1 q-mb-sm")
             with preview_container:
                 ui.label("Sélectionnez un document dans la file ou ajoutez-en un.").classes(
                     "text-grey-6 q-pa-lg text-center w-full"
                 )
 
-        with ui.card().classes("col-grow").style("min-width: 45%"):
-            ui.label("Fiche d'analyse").classes("text-subtitle1 q-mb-sm")
+        with ui.card().classes("col-grow").style(
+            "min-width: 42%; max-height: 82vh; overflow-y: auto;"
+        ):
+            ui.label("Fiches d'analyse").classes("text-subtitle1 q-mb-sm")
             with form_container:
-                ui.label("Les champs apparaîtront quand l'analyse sera prête.").classes(
+                ui.label("Les fiches apparaîtront quand l'analyse sera prête.").classes(
                     "text-grey-6"
                 )
 
@@ -120,8 +124,13 @@ def create_inbox_view() -> None:
         else:
             queue_badge.set_visibility(False)
 
+    def _detach_queue_listener() -> None:
+        queue.remove_listener(on_queue_changed)
+        logger.debug("Listener file Inbox désenregistré (client déconnecté).")
+
     def render_preview(path: Path) -> None:
-        preview_container.clear()
+        if not safe_clear(preview_container):
+            return
         data_url = preview_data_url(path)
         with preview_container:
             if data_url:
@@ -133,7 +142,8 @@ def create_inbox_view() -> None:
             ui.label(path.name).classes("text-caption text-grey-7 q-mt-sm")
 
     def render_form_for_job(job: InboxJob) -> None:
-        form_container.clear()
+        if not safe_clear(form_container):
+            return
         form_refs.clear()
         state.form_job_id = job.id
 
@@ -169,50 +179,99 @@ def create_inbox_view() -> None:
         if job.analysis is None:
             return
 
-        analysis = job.analysis
+        result: DocumentAnalysisResult = job.analysis
+        active_tasks = [
+            (idx, task)
+            for idx, task in enumerate(result.tasks)
+            if idx not in job.excluded_task_indices
+        ]
+
         with form_container:
-            form_refs["title"] = ui.input("Titre / Action", value=analysis.title).classes("w-full")
+            ui.label(
+                f"{len(active_tasks)} fiche(s) sur {len(result.tasks)} détectée(s)"
+            ).classes("text-subtitle2 q-mb-sm")
 
-            with ui.row().classes("w-full q-col-gutter-sm"):
-                form_refs["date_emission"] = ui.input(
-                    "Date d'émission",
-                    value=analysis.date_emission.isoformat(),
-                ).props("type=date").classes("col")
-                form_refs["date_event"] = ui.input(
-                    "Date événement (optionnel)",
-                    value=analysis.date_event.isoformat() if analysis.date_event else "",
-                ).props("type=date").classes("col")
+            form_refs["document_summary"] = ui.textarea(
+                "Résumé du document",
+                value=result.document_summary,
+            ).props("outlined autogrow").classes("w-full q-mb-md")
 
-            form_refs["deadline"] = ui.input(
-                "Deadline",
-                value=analysis.deadline.isoformat() if analysis.deadline else "",
-            ).props("type=date").classes("w-full")
-
-            ui.label("Catégorie").classes("text-caption text-grey-7")
-            form_refs["category"] = ui.radio(
-                {"pro": "Pro", "perso": "Perso"},
-                value=analysis.category,
-            ).props("inline").classes("q-mb-sm")
-
-            form_refs["tags"] = ui.input(
-                "Tags (séparés par des virgules)",
-                value=", ".join(analysis.tags),
-            ).classes("w-full")
-
-            form_refs["raw_summary"] = ui.textarea(
-                "Résumé IA",
-                value=analysis.raw_summary,
-            ).props("readonly outlined autogrow").classes("w-full")
-
-            ui.label(f"Confiance IA : {analysis.confidence:.0%}").classes(
+            ui.label(f"Confiance IA globale : {result.confidence:.0%}").classes(
                 "text-caption text-grey-7 q-mb-md"
             )
 
-            ui.button(
-                "Valider et Classer",
-                icon="check",
-                on_click=lambda: handle_validate(job.id),
-            ).props("color=primary unelevated").classes("w-full")
+            for idx, task in active_tasks:
+                card_key = f"{job.id}_{idx}"
+                with ui.card().classes("w-full q-mb-sm q-pa-sm"):
+                    with ui.row().classes("items-center justify-between q-mb-xs"):
+                        ui.label(f"Fiche {idx + 1}").classes("text-caption text-grey-7")
+                        ui.button(
+                            icon="close",
+                            on_click=lambda i=idx, jid=job.id: exclude_task_card(jid, i),
+                        ).props("flat dense round size=sm color=negative").tooltip(
+                            "Retirer cette fiche"
+                        )
+
+                    form_refs[f"{card_key}_title"] = ui.input(
+                        "Titre / Action",
+                        value=task.title,
+                    ).classes("w-full")
+
+                    with ui.row().classes("w-full q-col-gutter-sm"):
+                        form_refs[f"{card_key}_date_emission"] = ui.input(
+                            "Date d'émission",
+                            value=task.date_emission.isoformat(),
+                        ).props("type=date").classes("col")
+                        form_refs[f"{card_key}_date_event"] = ui.input(
+                            "Date événement (optionnel)",
+                            value=task.date_event.isoformat() if task.date_event else "",
+                        ).props("type=date").classes("col")
+
+                    form_refs[f"{card_key}_deadline"] = ui.input(
+                        "Deadline / Événement",
+                        value=task.deadline.isoformat() if task.deadline else "",
+                    ).props("type=date").classes("w-full")
+
+                    form_refs[f"{card_key}_suggestion"] = ui.input(
+                        label="Suggestion IA",
+                        value=task.suggestion or "",
+                        placeholder="Action immédiate ou rappel logistique…",
+                    ).props("outlined").classes("w-full q-mb-sm")
+
+                    ui.label("Catégorie").classes("text-caption text-grey-7")
+                    form_refs[f"{card_key}_category"] = ui.radio(
+                        {"pro": "Pro", "perso": "Perso"},
+                        value=task.category,
+                    ).props("inline").classes("q-mb-sm")
+
+                    form_refs[f"{card_key}_tags"] = ui.input(
+                        "Tags (séparés par des virgules)",
+                        value=", ".join(task.tags),
+                    ).classes("w-full")
+
+                    if task.justification_proof and task.justification_proof != "Aucune":
+                        ui.label(f"Preuve IA : « {task.justification_proof} »").classes(
+                            "text-caption text-grey-6 q-mt-xs italic"
+                        )
+
+            if not active_tasks:
+                ui.label("Aucune fiche sélectionnée — rouvrez le document ou retirez-le.").classes(
+                    "text-grey-7 q-mb-md"
+                )
+            else:
+                count = len(active_tasks)
+                ui.button(
+                    f"Valider les {count} tâche{'s' if count > 1 else ''}",
+                    icon="check",
+                    on_click=lambda: handle_validate(job.id),
+                ).props("color=primary unelevated").classes("w-full q-mt-md")
+
+    def exclude_task_card(job_id: str, task_index: int) -> None:
+        job = queue.get_job(job_id)
+        if job is None:
+            return
+        job.excluded_task_indices.add(task_index)
+        render_form_for_job(job)
 
     def load_job(job_id: str) -> None:
         job = queue.get_job(job_id)
@@ -228,12 +287,12 @@ def create_inbox_view() -> None:
         if state.active_job_id == job_id:
             state.active_job_id = None
             state.form_job_id = None
-            preview_container.clear()
-            with preview_container:
-                ui.label("Sélectionnez un document dans la file.").classes("text-grey-6 q-pa-lg")
-            form_container.clear()
-            with form_container:
-                ui.label("En attente d'une sélection.").classes("text-grey-6")
+            if safe_clear(preview_container):
+                with preview_container:
+                    ui.label("Sélectionnez un document dans la file.").classes("text-grey-6 q-pa-lg")
+            if safe_clear(form_container):
+                with form_container:
+                    ui.label("En attente d'une sélection.").classes("text-grey-6")
         render_queue.refresh()
         update_queue_badge()
 
@@ -245,42 +304,98 @@ def create_inbox_view() -> None:
         if state.form_job_id != job_id:
             ui.notify("Ouvrez ce document avant de valider.", type="warning")
             return
-        try:
-            title = str(form_refs["title"].value or "").strip()
-            date_emission = parse_optional_date(str(form_refs["date_emission"].value))
-            if date_emission is None:
-                raise ValueError("La date d'émission est obligatoire.")
-            date_event = parse_optional_date(str(form_refs["date_event"].value))
-            deadline = parse_optional_date(str(form_refs["deadline"].value))
-            category = str(form_refs["category"].value)
-            tags = parse_tags_input(str(form_refs["tags"].value or ""))
-            raw_summary = str(form_refs["raw_summary"].value or "")
+        if job.analysis is None:
+            ui.notify("Analyse manquante.", type="warning")
+            return
 
-            task_id = validate_inbox_document(
+        try:
+            document_summary = str(form_refs.get("document_summary").value or "").strip()
+            validations: list[TaskValidationInput] = []
+            original_tasks = job.analysis.tasks
+
+            for idx, task in enumerate(original_tasks):
+                if idx in job.excluded_task_indices:
+                    continue
+                card_key = f"{job_id}_{idx}"
+                title = str(form_refs[f"{card_key}_title"].value or "").strip()
+                date_emission = parse_optional_date(
+                    str(form_refs[f"{card_key}_date_emission"].value)
+                )
+                if date_emission is None:
+                    raise ValueError(f"La date d'émission est obligatoire (fiche {idx + 1}).")
+                date_event = parse_optional_date(str(form_refs[f"{card_key}_date_event"].value))
+                deadline = parse_optional_date(str(form_refs[f"{card_key}_deadline"].value))
+                category = str(form_refs[f"{card_key}_category"].value)
+                tags = parse_tags_input(str(form_refs[f"{card_key}_tags"].value or ""))
+                suggestion = str(form_refs[f"{card_key}_suggestion"].value or "").strip() or None
+
+                validations.append(
+                    TaskValidationInput(
+                        title=title,
+                        date_emission=date_emission,
+                        date_event=date_event,
+                        deadline=deadline,
+                        category=category,
+                        tags=tags,
+                        raw_summary=document_summary,
+                        justification_proof=task.justification_proof,
+                        suggestion=suggestion or task.suggestion,
+                    )
+                )
+
+            if not validations:
+                ui.notify("Sélectionnez au moins une fiche à valider.", type="warning")
+                return
+
+            ged_date = min(item.date_emission for item in validations)
+            ged_category = validations[0].category
+            if all(item.category == "perso" for item in validations):
+                ged_category = "perso"
+            elif all(item.category == "pro" for item in validations):
+                ged_category = "pro"
+            ged_title = validations[0].title if len(validations) == 1 else _display_filename(
+                job.file_path
+            ).rsplit(".", 1)[0]
+
+            task_ids = validate_inbox_tasks(
                 job.file_path,
-                title=title,
-                date_emission=date_emission,
-                date_event=date_event,
-                deadline=deadline,
-                category=category,
-                tags=tags,
-                raw_summary=raw_summary,
+                validations,
+                ged_title=ged_title,
+                ged_category=ged_category,
+                ged_date_emission=ged_date,
+                document_summary=document_summary,
             )
-            ui.notify(f"Document classé — tâche #{task_id} créée.", type="positive")
-            if try_auto_sync_task(task_id):
-                ui.notify("Synchronisé automatiquement avec Google Calendar.", type="positive")
+            ui.notify(
+                f"Document classé — {len(task_ids)} tâche(s) créée(s).",
+                type="positive",
+            )
+            for task_id in task_ids:
+                if try_auto_sync_task(task_id):
+                    ui.notify(
+                        f"Tâche #{task_id} synchronisée avec Google Calendar.",
+                        type="positive",
+                    )
             remove_job(job_id)
         except Exception as exc:
             logger.exception("Validation échouée")
             ui.notify(f"Erreur lors de la validation : {exc}", type="negative")
 
     def on_queue_changed() -> None:
-        render_queue.refresh()
-        update_queue_badge()
-        if state.active_job_id:
-            job = queue.get_job(state.active_job_id)
-            if job:
-                render_form_for_job(job)
+        def _refresh_ui() -> None:
+            if not element_client_alive(form_container):
+                _detach_queue_listener()
+                return
+            render_queue.refresh()
+            update_queue_badge()
+            if state.active_job_id:
+                job = queue.get_job(state.active_job_id)
+                if job:
+                    render_form_for_job(job)
+
+        try:
+            run_if_client_alive(form_container, _refresh_ui, on_dead=_detach_queue_listener)
+        except RuntimeError:
+            _detach_queue_listener()
 
     @ui.refreshable
     def render_queue() -> None:
@@ -353,65 +468,30 @@ def create_inbox_view() -> None:
         enqueue_file(dest, filename, source=source)
 
     upload.on_upload(process_upload)
+    wire_clipboard_paste(upload, paste_zone)
 
-    def activate_paste_zone() -> None:
-        ui.run_javascript("window.__trankilPasteActive = true")
-
-    def deactivate_paste_zone() -> None:
-        ui.run_javascript("window.__trankilPasteActive = false")
-
-    paste_zone.on("click", activate_paste_zone)
-    paste_zone.on("focus", activate_paste_zone)
-    paste_zone.on("focusin", activate_paste_zone)
-    paste_zone.on("focusout", deactivate_paste_zone)
-
-    async def setup_clipboard_paste() -> None:
-        upload_url = upload._props["url"]
-        await ui.run_javascript(
-            f"""
-            (function() {{
-                if (window.__trankilPasteSetup) return;
-                window.__trankilPasteSetup = true;
-                window.__trankilUploadUrl = {json.dumps(upload_url)};
-                window.__trankilPasteActive = false;
-
-                document.addEventListener('paste', async (event) => {{
-                    if (!window.__trankilPasteActive) return;
-                    const items = event.clipboardData?.items;
-                    if (!items) return;
-
-                    for (const item of items) {{
-                        if (!item.type.startsWith('image/')) continue;
-                        event.preventDefault();
-
-                        const blob = item.getAsFile();
-                        if (!blob) continue;
-
-                        const ext = item.type === 'image/jpeg' ? 'jpg'
-                            : item.type === 'image/png' ? 'png'
-                            : item.type === 'image/webp' ? 'webp'
-                            : 'png';
-                        const form = new FormData();
-                        form.append('file', blob, `paste_${{Date.now()}}.${{ext}}`);
-
-                        try {{
-                            await fetch(window.__trankilUploadUrl, {{
-                                method: 'POST',
-                                body: form,
-                            }});
-                        }} catch (error) {{
-                            console.error('Trankil paste error', error);
-                        }}
-                        break;
-                    }}
-                }});
-            }})();
-            """
-        )
-
-    ui.timer(0.2, setup_clipboard_paste, once=True)
     ui.timer(2.0, refresh_mock_banner, once=True)
 
     queue.add_listener(on_queue_changed)
+    try:
+        form_container.client.on_disconnect(_detach_queue_listener)
+    except RuntimeError:
+        logger.debug("Impossible d'enregistrer on_disconnect sur l'Inbox.")
     render_queue()
     update_queue_badge()
+
+    def refresh_inbox() -> None:
+        def _do_refresh() -> None:
+            render_queue.refresh()
+            update_queue_badge()
+            refresh_mock_banner()
+            if state.active_job_id:
+                job = queue.get_job(state.active_job_id)
+                if job:
+                    render_preview(job.file_path)
+                    render_form_for_job(job)
+
+        run_if_client_alive(form_container, _do_refresh, on_dead=_detach_queue_listener)
+
+    register_tab_refresh("inbox", refresh_inbox)
+    return refresh_inbox

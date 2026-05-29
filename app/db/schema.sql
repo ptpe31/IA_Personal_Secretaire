@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at DATETIME,
     document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
     raw_summary TEXT,
+    justification_proof TEXT,
+    suggestion TEXT,
     calendar_synced INTEGER NOT NULL DEFAULT 0,
     calendar_event_id TEXT,
     created_at DATETIME NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -65,3 +67,4 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_model', 'llama3.2-vi
 INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_base_url', 'http://localhost:11434');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('google_calendar_auto_sync', 'false');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('notification_enabled', 'true');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true');

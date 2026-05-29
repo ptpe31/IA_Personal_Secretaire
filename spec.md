@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.2-validated  
+> **Version** : 0.3-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : Validé par l'Architecte — prêt pour implémentation  
+> **Statut** : V1 fonctionnelle — interface unifiée, Autopilote, multi-tâches  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -13,8 +13,8 @@
 2. [Stack technique & contraintes](#2-stack-technique--contraintes)
 3. [Architecture système](#3-architecture-système)
 4. [Modèle de données](#4-modèle-de-données)
-5. [Vue 1 — Inbox (analyse & validation)](#5-vue-1--inbox-analyse--validation)
-6. [Vue 2 — Tableau de bord (Kanban)](#6-vue-2--tableau-de-bord-kanban)
+5. [Vue principale — Tableau de bord unifié](#5-vue-principale--tableau-de-bord-unifié)
+6. [Vue secondaire — Inbox (validation manuelle)](#6-vue-secondaire--inbox-validation-manuelle)
 7. [Vue 3 — GED / Archives](#7-vue-3--ged--archives)
 8. [Automatisations](#8-automatisations)
 9. [Intégration Ollama (IA locale)](#9-intégration-ollama-ia-locale)
@@ -46,11 +46,22 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 
 ### 1.3 Persona & workflow quotidien (référence UX)
 
+**Depuis V0.3** : le **Tableau de bord** est la page d'accueil (`/`). L'Inbox n'est plus un passage obligatoire.
+
 ```
 [Courrier PDF] ──► Scanner ──┐
 [Photo iPhone] ──► HEIC ────┤
-[Mail capture] ──► PNG ─────┤──► Drag & Drop ──► Inbox ──► Validation ──► Dashboard + GED
+[Mail capture] ──► PNG ─────┤──► Dashboard (dépôt) ──► Analyse Ollama ──► Kanban + GED
+                             │                              │
+                             │                              └─► (Autopilote OFF ou erreur)
+                             │                                       └─► Inbox (validation manuelle)
+                             └─► Coller ⌘V dans zone dédiée
 ```
+
+| Mode | Comportement |
+|------|--------------|
+| **Autopilote ON** (défaut) | Document analysé → tâches créées automatiquement → fichier archivé en GED → l'utilisateur reste sur le Dashboard. |
+| **Autopilote OFF** ou **erreur Ollama** | Document mis en file Inbox → bannière cliquable sur le Dashboard : « N document(s) nécessite(nt) votre validation manuelle ». |
 
 ---
 
@@ -102,7 +113,7 @@ pypdf                    # métadonnées PDF (optionnel)
 | `python main.py` | Développement et Terminal |
 | **`start.command`** | Double-clic sur le Bureau — confort quotidien entrepreneur |
 
-Le script `start.command` active le venv, lance l'app et ouvre le navigateur sur `http://localhost:8080`.
+Le script `start.command` active le venv, libère le port 8080 si occupé, lance l'app et ouvre le navigateur sur `http://localhost:8080`. Variable optionnelle : `TRANKIL_LOG_LEVEL=DEBUG`.
 
 ---
 
@@ -113,12 +124,12 @@ Le script `start.command` active le venv, lance l'app et ouvre le navigateur sur
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     NiceGUI (Frontend local)                     │
-│   Inbox │ Dashboard (Kanban) │ GED/Archives │ Settings          │
+│   Dashboard (accueil) │ Inbox │ GED/Archives │ Paramètres       │
 └────────────────────────────┬────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
 │                      Application Layer (Python)                  │
-│  DocumentService │ TaskService │ TagService │ GEDService          │
+│  TaskService │ GEDService │ InboxQueueService │ AutopilotService │
 │  OllamaClient ( + MockOllamaClient ) │ NotificationService       │
 │  CalendarSyncService (opt-in, OFF par défaut)                    │
 └──────┬──────────────────┬──────────────────┬────────────────────┘
@@ -126,14 +137,15 @@ Le script `start.command` active le venv, lance l'app et ouvre le navigateur sur
        ▼                  ▼                  ▼
   SQLite            ~/Trankil-v2/      Ollama :11434
   database.sqlite   Pro|Perso/GED/     llama3.2-vision
-                    (chemin fixe V1)
+                    .inbox/ (file temp.)
 ```
 
 ### 3.2 Processus applicatif
 
 | Composant | Rôle |
 |-----------|------|
-| **Main app** | Point d'entrée NiceGUI, routing entre vues, lifecycle |
+| **Main app** (`main.py`) | Point d'entrée NiceGUI ; Dashboard = onglet par défaut ; navigation entre vues |
+| **InboxQueueService** | File FIFO asynchrone : upload → analyse Ollama en arrière-plan → Autopilote ou file manuelle |
 | **Background scheduler** | Thread daemon : vérifie deadlines, envoie notifications J-3 / J-1 (**app ouverte uniquement en V1**) |
 | **Services** | Couche métier découplée de l'UI (testable unitairement) |
 
@@ -145,7 +157,7 @@ Le script `start.command` active le venv, lance l'app et ouvre le navigateur sur
 | GED Pro | `~/Trankil-v2/Pro/GED/` |
 | GED Perso | `~/Trankil-v2/Perso/GED/` |
 | Base SQLite | `~/Trankil-v2/database.sqlite` |
-| Inbox temporaire | `~/Trankil-v2/.inbox/` (fichiers en attente de validation) |
+| Inbox temporaire | `~/Trankil-v2/.inbox/` (fichiers en attente de validation manuelle) |
 | Credentials Google | `~/Trankil-v2/.credentials/google_calendar/` (hors git) |
 
 Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérieure.
@@ -168,8 +180,10 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | `deadline` | DATE NULL | **Date limite officielle** extraite du document (sans marge artificielle) |
 | `status` | TEXT NOT NULL | `'todo'` \| `'urgent'` \| `'archived'` |
 | `completed_at` | DATETIME NULL | Horodatage archivage |
-| `document_id` | INTEGER FK NULL | Lien vers `documents.id` (**1 fichier = 1 tâche** en V1) |
-| `raw_summary` | TEXT NULL | Résumé IA — indexé pour recherche GED |
+| `document_id` | INTEGER FK NULL | Lien vers `documents.id` (**1 document → N tâches** possible) |
+| `raw_summary` | TEXT NULL | Résumé document IA — indexé pour recherche GED |
+| `justification_proof` | TEXT NULL | Citation / preuve extraite par l'IA pour la tâche |
+| `suggestion` | TEXT NULL | Conseil actionnable IA (ex. numéro à appeler, horaires) |
 | `calendar_synced` | BOOLEAN DEFAULT 0 | Événement Google créé |
 | `calendar_event_id` | TEXT NULL | ID événement Google |
 | `created_at` | DATETIME | Création enregistrement |
@@ -219,11 +233,15 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | `key` | TEXT PK | |
 | `value` | TEXT | JSON sérialisé si besoin |
 
-Clés settings prévues :
-- `ollama_model` : `"llama3.2-vision"`
-- `ollama_base_url` : `"http://localhost:11434"`
-- `google_calendar_auto_sync` : `"false"` (**OFF par défaut**)
-- `notification_enabled` : `"true"`
+Clés settings :
+
+| Clé | Défaut | Description |
+|-----|--------|-------------|
+| `ollama_model` | `"llama3.2-vision"` | Modèle vision Ollama |
+| `ollama_base_url` | `"http://localhost:11434"` | URL Ollama |
+| `autopilot_enabled` | `"true"` | Validation automatique post-analyse |
+| `google_calendar_auto_sync` | `"false"` | Sync Calendar à la validation (**OFF par défaut**) |
+| `notification_enabled` | `"true"` | Relances J-3 / J-1 |
 
 ### 4.2 Règles métier — Statut des tâches
 
@@ -240,6 +258,8 @@ SINON → À FAIRE
 
 **Marge utilisateur** : la deadline en base est la **date officielle** du document. La marge est gérée par le **système de relance** (alertes J-3 et J-1), pas par une modification de la donnée stockée.
 
+**Multi-tâches** : un même document peut produire plusieurs tâches (ex. courrier avec plusieurs échéances). Toutes partagent le même `document_id` après validation.
+
 ### 4.3 Index recommandés
 
 ```sql
@@ -252,56 +272,186 @@ CREATE INDEX idx_tasks_raw_summary ON tasks(raw_summary);  -- recherche GED
 
 ---
 
-## 5. Vue 1 — Inbox (analyse & validation)
+## 5. Vue principale — Tableau de bord unifié
 
-### 5.1 Comportement
+> **Onglet par défaut** au lancement · route NiceGUI `/` · fichier `app/ui/dashboard_view.py`
 
-1. Zone **drag-and-drop** acceptant : `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, **`.heic`** (photos iPhone via `pillow-heif`).
-2. À l'upload, copie du fichier dans `~/Trankil-v2/.inbox/{uuid}_{original_name}`.
-3. Appel **OllamaClient.analyze_document(path)** → JSON structuré.
-4. Affichage **split-view** :
+### 5.1 Structure de la page
+
+La page est divisée en **deux sections verticales** :
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SECTION HAUTE — Dépôt de documents & Statut                │
+│  ┌──────────────────────┬──────────────────────────────────┐│
+│  │ Coller capture ⌘V    │ Glisser-déposer / choisir fichier││
+│  └──────────────────────┴──────────────────────────────────┘│
+│  [spinner + barre progression + message d'état Ollama]        │
+│  [bannière validation manuelle → lien Inbox si nécessaire]    │
+├─────────────────────────────────────────────────────────────┤
+│  SECTION BASSE — Filtres + Kanban                             │
+│  Filtrer : [Tout] [Pro] [Perso]   #tag1 #tag2 …              │
+│  ┌─────────────┬─────────────┬─────────────┐                  │
+│  │ EN RETARD   │ À FAIRE     │ ARCHIVÉ     │                  │
+│  └─────────────┴─────────────┴─────────────┘                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Pas de prévisualisation document** sur cette vue — écran volontairement épuré.
+
+### 5.2 Dépôt de documents
+
+Module partagé : `app/ui/document_upload.py` (`create_document_intake`).
+
+| Zone | Comportement |
+|------|--------------|
+| **Coller une image** | Carte cliquable ; focus → ⌘V / Ctrl+V envoie l'image au pipeline d'upload |
+| **Glisser-déposer** | Accepte `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, **`.heic`** |
+| **Traitement** | Copie dans `~/Trankil-v2/.inbox/{uuid}_{original_name}` → enqueue `InboxQueueService` |
+
+Les deux zones sont **côte à côte** (layout `ui.row`, deux colonnes égales).
+
+### 5.3 Indicateur « En cours de traitement »
+
+Pendant l'analyse Ollama (file FIFO) :
+
+- **Spinner** NiceGUI (`ui.spinner`) + **barre de progression** linéaire indéterminée
+- Texte d'état :
+  - En attente : `En attente — [Nom_du_fichier]`
+  - En cours : `⚙️ Analyse de [Nom_du_fichier] par la secrétaire IA en cours...`
+- À la fin : disparition du spinner + **rafraîchissement instantané** des colonnes Kanban (listener sur la file + `register_tab_refresh`)
+
+Transitions non bloquantes : analyse en `asyncio.to_thread`, garde-fous client NiceGUI (`inbox_ui_safe.py`).
+
+### 5.4 Bannière validation manuelle
+
+Affichée si `manual_pending_count() > 0` (jobs `READY` ou `FAILED` dans la file) :
+
+```
+⚠️ N document(s) nécessite(nt) votre validation manuelle.
+[Cliquez ici pour aller à l'Inbox]
+```
+
+Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
+
+### 5.5 Filtres globaux
+
+| Filtre | Comportement |
+|--------|--------------|
+| **Tout** | Toutes catégories |
+| **Pro uniquement** | `category = 'pro'` |
+| **Perso uniquement** | `category = 'perso'` |
+| **Méta-tags** | Chips cliquables ; multi-sélection en logique **OR** |
+
+### 5.6 Colonnes Kanban
+
+| Colonne | Contenu | Style |
+|---------|---------|-------|
+| **EN RETARD / URGENT** | Non archivées, deadline passée ou ≤ 48h | Fond rouge, badge urgence |
+| **À FAIRE** | Non archivées, deadline > 48h | Tri deadline ASC |
+| ↳ *Sans date* | Non archivées, `deadline IS NULL` | Sous-section en **bas** de la colonne « À FAIRE » |
+| **ARCHIVÉ** | `completed_at` renseigné | Vert discret |
+
+### 5.7 Carte tâche
+
+```
+[Pro] Mettre à jour Expo
+• Reçu le : 28/05/2026
+• Deadline : 26/06/2026
+💡 Faire l'inscription par mail ou au 05.62.11.62.66
+• Tags : #Tech #Expo #Maintenance
+☐ Fait    [Modifier]    [Suppr.]    [📅 Sync Calendar]
+```
+
+Interactions :
+- **Checkbox « Fait »** → archivage
+- **Bouton « Modifier »** → modal d'édition (`task_edit_dialog.py`)
+- **Bouton « Suppr. »** → suppression définitive (fichier GED conservé)
+- **Sync Calendar** → création événement manuelle (§10)
+
+### 5.8 Rafraîchissement
+
+- Recalcul colonne « Urgent » à chaque chargement et toutes les **60 s** (timer NiceGUI)
+- Rafraîchissement à chaque changement d'onglet (`tab_registry.py`)
+- Rafraîchissement Kanban à chaque événement de la file d'analyse
+
+---
+
+## 6. Vue secondaire — Inbox (validation manuelle)
+
+> **Onglet second** dans la navigation · fichier `app/ui/inbox_view.py`  
+> Rôle : **rattrapage / mode manuel** lorsque l'Autopilote est désactivé ou en cas d'erreur d'analyse.
+
+### 6.1 Comportement
+
+1. Zone **coller image** + **drag-and-drop** (même module `document_upload.py`, layout vertical).
+2. **File d'analyse asynchrone** : plusieurs documents peuvent être en queue ; traitement Ollama sérialisé en arrière-plan.
+3. Affichage **split-view** pour chaque job prêt :
    - **Gauche** : preview document (image directe ; HEIC converti ; PDF → **page 1 uniquement**).
-   - **Droite** : formulaire éditable pré-rempli.
-5. Bouton **« Valider et Classer »** :
+   - **Droite** : **fiches multi-tâches** éditables (1 document → N tâches).
+4. Bouton **« Valider et Classer »** :
    - Renomme et déplace le fichier vers GED (§7).
-   - Crée `documents` + `tasks` (+ `raw_summary`) + tags.
-   - Retire de l'inbox temporaire.
-   - Propose bouton **« Synchroniser l'agenda »** (manuel, Calendar non auto par défaut).
+   - Crée `documents` + N `tasks` (+ tags, `justification_proof`, `suggestion`).
+   - Retire le job de la file.
+   - Sync Calendar auto si activée dans Paramètres.
 
-### 5.2 Schéma JSON attendu de l'IA
+### 6.2 Schéma JSON attendu de l'IA (multi-tâches)
 
 ```json
 {
-  "title": "Mettre à jour le SDK Expo avant coupure",
-  "date_emission": "2026-05-28",
-  "date_event": null,
-  "deadline": "2026-06-26",
-  "category": "pro",
-  "tags": ["Tech", "Expo", "Maintenance"],
-  "confidence": 0.85,
-  "raw_summary": "Mail Expo indiquant une maintenance obligatoire..."
+  "tasks": [
+    {
+      "title": "Inscription spectacle Hip-Hop",
+      "date_emission": "2026-05-28",
+      "date_event": "2026-06-15",
+      "deadline": "2026-06-10",
+      "category": "pro",
+      "tags": ["Spectacle", "Hip-Hop"],
+      "justification_proof": "« Inscriptions avant le 10 juin »",
+      "suggestion": "Faire l'inscription par mail ou au 05.62.11.62.66",
+      "confidence": 0.85
+    },
+    {
+      "title": "Répétition atelier",
+      "date_emission": "2026-05-28",
+      "date_event": "2026-06-12",
+      "deadline": null,
+      "category": "pro",
+      "tags": ["Répétition"],
+      "justification_proof": "« Atelier le 12 juin de 18h à 19h »",
+      "suggestion": "Horaires de l'atelier : 18h à 19h",
+      "confidence": 0.80
+    }
+  ],
+  "document_summary": "Flyer association avec deux événements distincts.",
+  "confidence": 0.82
 }
 ```
 
-### 5.3 Règles de parsing & fallback
+Format mono-tâche (legacy) normalisé automatiquement par `normalize_analysis_payload()`.
+
+### 6.3 Règles de parsing & fallback
 
 | Champ | Règle |
 |-------|-------|
 | `date_emission` | Extraire du document ; si absent → date du jour (timezone locale Mac) |
-| `deadline` | Extraire la **date officielle** telle qu'inscrite sur le document (ex: « avant le 26 juin » → `2026-06-26`). **Pas de marge appliquée en base.** |
+| `deadline` | Extraire la **date officielle** telle qu'inscrite sur le document. **Pas de marge en base.** |
 | `category` | `pro` par défaut si ambigu ; l'utilisateur corrige |
-| `tags` | 1 à 5 tags, capitalisation normalisée |
-| `raw_summary` | Texte libre IA ; **persisté en base** pour recherche GED |
+| `tags` | 1 à 5 tags, capitalisation normalisée (`app/utils/tags.py`) |
+| `document_summary` | Résumé global du document ; **persisté** via `raw_summary` sur chaque tâche liée |
+| `justification_proof` | Citation ou extrait justifiant la tâche |
+| `suggestion` | Conseil actionnable court pour l'utilisateur |
 
-### 5.4 Mode mock (sans Ollama)
+Post-traitement : `task_expansion.py` (ancrage temporel relatif), inférence suggestion de secours (`suggestion_infer.py`).
+
+### 6.4 Mode mock (sans Ollama)
 
 Si Ollama indisponible ou modèle `llama3.2-vision` absent :
-- **Mock uniquement** — pas de modèle de secours (`llava`, etc.) pour éviter les hallucinations de dates.
-- Retourner un JSON de démo basé sur le nom/extension du fichier.
+- **Mock uniquement** — pas de modèle de secours.
+- Retourne un JSON multi-tâches de démo.
 - Bandeau UI : « Mode démo — Ollama non disponible ».
-- Permet de tester tout le flux Inbox → Dashboard → GED.
 
-### 5.5 Champs formulaire (UI)
+### 6.5 Champs formulaire (UI Inbox)
 
 | Champ | Widget | Éditable |
 |-------|--------|----------|
@@ -310,51 +460,11 @@ Si Ollama indisponible ou modèle `llama3.2-vision` absent :
 | Date événement | Date picker (optionnel) | Oui |
 | Deadline | Date picker | Oui |
 | Catégorie | Radio Pro / Perso | Oui |
-| Tags | Chips + ajout manuel | Oui |
+| Tags | Input texte | Oui |
+| Suggestion | Input texte | Oui |
+| Preuve IA | Label lecture seule | Non |
 
----
-
-## 6. Vue 2 — Tableau de bord (Kanban)
-
-### 6.1 Filtres globaux (barre supérieure)
-
-| Filtre | Comportement |
-|--------|--------------|
-| **Tout** | Toutes catégories |
-| **Pro uniquement** | `category = 'pro'` |
-| **Perso uniquement** | `category = 'perso'` |
-| **Méta-tags** | Chips cliquables ; multi-sélection en logique **OR** (union : voir toutes les tâches ayant **au moins un** des tags sélectionnés) |
-
-### 6.2 Colonnes
-
-| Colonne | Contenu | Style |
-|---------|---------|-------|
-| **EN RETARD / URGENT** | Non archivées, deadline passée ou ≤ 48h | Fond rouge, badge urgence |
-| **À FAIRE** | Non archivées, deadline > 48h | Tri deadline ASC |
-| ↳ *Sans date* | Non archivées, `deadline IS NULL` | Sous-section en **bas** de la colonne « À FAIRE » |
-| **ARCHIVÉ** | `completed_at` renseigné | Vert discret, opacité réduite |
-
-### 6.3 Carte tâche
-
-Affichage minimal :
-```
-[Pro] Mettre à jour Expo
-• Reçu le : 28/05/2026
-• Deadline : 26/06/2026
-• Tags : #Tech #Expo #Maintenance
-☐ Fait    [Modifier]    [📅 Sync Calendar]
-```
-
-Interactions :
-- **Checkbox « Fait »** → `completed_at = now()`, animation vers Archivé.
-- **Bouton « Modifier »** → ouvre formulaire d'édition (titre, dates, catégorie, tags, notes). **Indispensable** : l'IA peut se tromper, les plans changent.
-- **Clic document** → ouvre preview ou révèle dans GED.
-- **Sync Calendar** → création événement manuelle (§10).
-
-### 6.4 Rafraîchissement
-
-- Recalcul colonne « Urgent » à chaque chargement et toutes les **60 s** (timer NiceGUI).
-- Pas de WebSocket externe ; tout local.
+Possibilité d'**exclure** des fiches avant validation (indices exclus dans le job).
 
 ---
 
@@ -388,7 +498,21 @@ Exemples :
 
 ## 8. Automatisations
 
-### 8.1 Relances anti-oubli (macOS)
+### 8.1 Mode Autopilote
+
+Service : `app/services/autopilot_service.py`
+
+| Étape | Action |
+|-------|--------|
+| 1 | Analyse Ollama terminée (`JobStatus.READY`) |
+| 2 | Si `autopilot_enabled == "true"` → `auto_validate_job()` |
+| 3 | Crée N tâches + archive GED + sync Calendar si auto activée |
+| 4 | Supprime le job de la file ; notifie ; rafraîchit Dashboard |
+| Échec autopilote | Job reste en file ; bannière validation manuelle |
+
+Toggle dans **Paramètres** : « Autopilote (validation automatique) » — **ON par défaut**.
+
+### 8.2 Relances anti-oubli (macOS)
 
 | Déclencheur | Condition | Action |
 |-------------|-----------|--------|
@@ -407,7 +531,7 @@ Implémentation V1 :
 
 **V1.1** : daemon `launchd` pour notifications même app fermée.
 
-### 8.2 Google Calendar Sync
+### 8.3 Google Calendar Sync
 
 Voir §10.
 
@@ -429,27 +553,28 @@ ollama:
 1. Vérifier disponibilité : `GET /api/tags` + présence de `llama3.2-vision`.
 2. Préparer l'image : fichier natif, HEIC → PNG, PDF → **page 1** via `pdf2image` + Poppler.
 3. Encoder image en base64 pour l'API Ollama vision.
-4. Prompt système structuré demandant **JSON strict** (voir §5.2).
+4. Prompt système structuré demandant **JSON strict multi-tâches** (voir §6.2).
 5. Parser réponse avec `pydantic` ; retry 1× si JSON invalide.
-6. Si échec ou modèle absent → **MockOllamaClient** (pas d'autre modèle).
+6. Post-traitement : expansion dates relatives, normalisation tags.
+7. Si échec ou modèle absent → **MockOllamaClient** (pas d'autre modèle).
 
-### 9.3 Prompt système
+### 9.3 Prompt système (résumé)
 
 ```
 Tu es un assistant secrétaire pour un entrepreneur français.
-Analyse ce document (courrier, facture, capture d'écran d'e-mail, photo).
-Extrais les informations et réponds UNIQUEMENT en JSON valide avec les clés :
-title, date_emission (ISO), date_event (ISO ou null), deadline (ISO ou null),
-category ("pro" ou "perso"), tags (array strings), confidence (0-1), raw_summary.
-Dates : format YYYY-MM-DD. Si date absente, date_emission = aujourd'hui.
-Pour deadline, extrais la date limite OFFICIELLE telle qu'indiquée sur le document.
-Ne modifie pas la date pour ajouter une marge : le système de relance gère les alertes.
-raw_summary : résumé textuel du contenu du document pour recherche ultérieure.
+Analyse ce document et extrais TOUTES les tâches actionnables distinctes.
+Réponds UNIQUEMENT en JSON valide avec :
+- tasks[] : title, date_emission, date_event, deadline, category, tags,
+  justification_proof, suggestion, confidence
+- document_summary, confidence
+Dates : YYYY-MM-DD. deadline = date officielle du document, sans marge.
 ```
+
+Prompt few-shot avec exemples Hip-Hop dans `ollama_client.py`.
 
 ### 9.4 PDF — Page 1 uniquement (V1)
 
-Conversion page 1 en image (`pdf2image` + **Poppler** via `brew install poppler`) puis envoi à Ollama vision. 90 % des informations critiques (dates, montants) d'un courrier administratif ou d'une facture sont sur la première page.
+Conversion page 1 en image (`pdf2image` + **Poppler**) puis envoi à Ollama vision.
 
 ### 9.5 HEIC — Photos iPhone (V1)
 
@@ -464,8 +589,8 @@ Support natif via **`pillow-heif`** : conversion transparente HEIC → preview +
 - OAuth 2.0 desktop flow (Google Cloud Console).
 - Scopes : `https://www.googleapis.com/auth/calendar.events`
 - Calendrier cible : **primary**
-- **Sync automatique OFF par défaut** — évite de polluer l'agenda avec des scans de test.
-- Procédure de configuration Google Cloud documentée dans le **README** ; `credentials.json` configuré ensemble au moment voulu.
+- **Sync automatique OFF par défaut**
+- Procédure documentée dans le **README**
 
 ### 10.2 Création événement
 
@@ -477,13 +602,13 @@ Support natif via **`pillow-heif`** : conversion transparente HEIC → preview +
 
 ### 10.3 UX
 
-- Bouton **« Synchroniser l'agenda »** sur carte tâche et post-validation Inbox (**action manuelle**).
-- Switch global **Settings** : activer sync auto (désactivé par défaut).
-- Indicateur visuel si déjà synchronisé.
+- Bouton **« Synchroniser l'agenda »** sur carte tâche Dashboard
+- Switch global **Paramètres** : sync auto à la validation (désactivé par défaut)
+- Sync auto également déclenchée par l'Autopilote si l'option est activée
 
 ### 10.4 Hors-ligne
 
-- Si pas de credentials : bouton grisé + lien « Configurer Google Calendar » (renvoie vers README).
+- Si pas de credentials : bouton grisé + message de configuration
 
 ---
 
@@ -496,91 +621,100 @@ IA_Personal_Secretaire/          # dépôt git
 ├── pyproject.toml
 ├── .env.example
 ├── .gitignore
-├── main.py                      # entrypoint NiceGUI
-├── start.command                # double-clic Bureau (copie/install doc)
+├── main.py                      # entrypoint NiceGUI — Dashboard onglet défaut
+├── start.command                # double-clic Bureau
 ├── app/
-│   ├── __init__.py
 │   ├── config.py                # constantes (ROOT_PATH fixe)
 │   ├── db/
-│   │   ├── __init__.py
 │   │   ├── connection.py
 │   │   ├── schema.sql
-│   │   └── migrations/
+│   │   └── migrations.py        # migrations incrémentales + backfill
 │   ├── models/
 │   │   ├── task.py
-│   │   ├── document.py
-│   │   └── tag.py
+│   │   ├── analysis.py          # DocumentAnalysisResult multi-tâches
+│   │   └── archive.py
 │   ├── services/
-│   │   ├── document_service.py
-│   │   ├── task_service.py
+│   │   ├── task_service.py      # validate_inbox_tasks (1 doc → N tasks)
 │   │   ├── ged_service.py
+│   │   ├── archive_service.py
+│   │   ├── inbox_queue.py       # file FIFO async Ollama
+│   │   ├── autopilot_service.py # validation automatique
+│   │   ├── task_expansion.py    # ancrage dates relatives
 │   │   ├── ollama_client.py
 │   │   ├── mock_ollama_client.py
 │   │   ├── notification_service.py
+│   │   ├── notification_scheduler.py
 │   │   └── calendar_service.py
 │   ├── ui/
-│   │   ├── __init__.py
-│   │   ├── layout.py            # nav Trankil-v2, shell
-│   │   ├── inbox_view.py
-│   │   ├── dashboard_view.py
+│   │   ├── dashboard_view.py    # page d'accueil unifiée
+│   │   ├── inbox_view.py        # validation manuelle split-view
+│   │   ├── document_upload.py   # dépôt + collage partagés
+│   │   ├── inbox_ui_safe.py     # garde-fous client NiceGUI
 │   │   ├── ged_view.py
 │   │   ├── settings_view.py
-│   │   └── task_edit_dialog.py  # modal Modifier
+│   │   ├── task_edit_dialog.py
+│   │   ├── calendar_button.py
+│   │   └── tab_registry.py
 │   └── utils/
 │       ├── dates.py
+│       ├── tags.py
 │       ├── slugify.py
-│       └── file_preview.py      # PDF p1, HEIC, images
+│       ├── file_preview.py
+│       ├── suggestion_infer.py
+│       └── analysis_logging.py
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/
-    ├── test_task_status.py
-    ├── test_ged_naming.py
-    └── test_ollama_mock.py
+└── tests/                       # 45+ tests unitaires
 ```
 
 ---
 
 ## 12. Plan d'implémentation itérative
 
-> **Priorité validée** : Phase 0 + Inbox MVP en premier — valider qu'Ollama lit un screenshot et produit le bon JSON avant le reste.
+### Phase 0 — Fondations ✅
+- [x] Initialiser dépôt, `pyproject.toml`, `.gitignore`
+- [x] Créer `~/Trankil-v2` au premier lancement
+- [x] Schéma SQLite + migrations incrémentales
+- [x] `OllamaClient` + `MockOllamaClient`
+- [x] Tests unitaires statut tâche + slug GED
+- [x] `start.command`
 
-### Phase 0 — Fondations (Sprint 1) ← **EN COURS**
-- [ ] Initialiser dépôt, `pyproject.toml`, `.gitignore`
-- [ ] Créer `~/Trankil-v2` au premier lancement
-- [ ] Schéma SQLite + migrations
-- [ ] `OllamaClient` + `MockOllamaClient`
-- [ ] Tests unitaires statut tâche + slug GED
-- [ ] `start.command`
+### Phase 1 — Inbox & analyse ✅
+- [x] Drag & drop NiceGUI (PDF, PNG, JPG, HEIC)
+- [x] Collage presse-papiers (⌘V)
+- [x] Preview document (PDF p1, HEIC, images)
+- [x] Analyse Ollama vision multi-tâches (ou mock)
+- [x] File d'attente asynchrone (`InboxQueueService`)
+- [x] Validation → GED + N tasks + raw_summary en base
 
-### Phase 1 — Inbox MVP (Sprint 2) ← **PRIORITÉ IMMÉDIATE**
-- [ ] Drag & drop NiceGUI (PDF, PNG, JPG, HEIC)
-- [ ] Preview document (PDF p1, HEIC, images)
-- [ ] Analyse Ollama vision (ou mock) → formulaire JSON
-- [ ] Validation → GED + task + raw_summary en base
+### Phase 2 — Dashboard ✅
+- [x] Kanban 3 colonnes + sous-section « Sans date »
+- [x] Filtres Pro/Perso + tags (OR)
+- [x] Checkbox archivage + bouton **Modifier** + suppression
+- [x] **Interface unifiée** : dépôt + statut + Kanban sur une page
+- [x] Dashboard = page d'accueil par défaut
+- [x] Mode **Autopilote** + bannière validation manuelle
 
-### Phase 2 — Dashboard (Sprint 3)
-- [ ] Kanban 3 colonnes + sous-section « Sans date »
-- [ ] Filtres Pro/Perso + tags (OR)
-- [ ] Checkbox archivage + bouton **Modifier**
+### Phase 3 — GED / Archives ✅
+- [x] Recherche full-text (incl. raw_summary)
+- [x] Preview & ouverture Finder
 
-### Phase 3 — GED / Archives (Sprint 4)
-- [ ] Recherche full-text (incl. raw_summary)
-- [ ] Preview & ouverture Finder
+### Phase 4 — Automatisations ✅
+- [x] Notifications J-3 / J-1 (app ouverte)
+- [x] Google Calendar OAuth + sync manuelle + option auto
 
-### Phase 4 — Automatisations (Sprint 5)
-- [ ] Notifications J-3 / J-1 (app ouverte)
-- [ ] Google Calendar OAuth + sync manuelle
-
-### Phase 5 — Polish (Sprint 6)
-- [ ] Settings UI (sync auto Calendar, notifications)
-- [ ] Gestion erreurs, logs
-- [ ] README : Ollama, Poppler, HEIC, Google Calendar, `start.command`
+### Phase 5 — Polish 🔄
+- [x] Settings UI (Autopilote, sync Calendar, notifications)
+- [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
+- [x] Suggestions IA (`suggestion`, `justification_proof`)
+- [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
 - [ ] Daemon `launchd` pour notifications app fermée
 - [ ] Export backup zip `~/Trankil-v2`
 - [ ] Chemin racine configurable
+- [ ] Refactor Inbox pour réutiliser entièrement `create_document_intake`
 
 ---
 
@@ -589,58 +723,67 @@ IA_Personal_Secretaire/          # dépôt git
 | Domaine | Décision |
 |---------|----------|
 | **Nom UI** | **Trankil-v2** (dépôt git : `IA_Personal_Secretaire`) |
+| **Page d'accueil** | **Tableau de bord unifié** — Inbox reléguée au mode manuel |
+| **Autopilote** | **ON par défaut** — validation auto post-analyse |
 | **Langue** | Français uniquement V1, pas d'i18n |
 | **UI framework** | **NiceGUI** validé à 100 % |
 | **Filtre tags** | **OR** (union) |
 | **Sans deadline** | Colonne « À FAIRE », sous-section **« Sans date »** en bas |
 | **Édition tâche** | **Oui** — bouton « Modifier » sur chaque carte |
-| **Fichiers / tâche** | **1 = 1** en V1 |
+| **Fichiers / tâches** | **1 document → N tâches** possible |
 | **Chemin racine** | **`~/Trankil-v2` fixe** V1 |
 | **PDF** | **Page 1** uniquement V1 |
 | **Poppler** | Prérequis Homebrew, documenté README |
 | **Lancement** | `python main.py` + **`start.command`** sur le Bureau |
 | **Modèle secours** | **Mock uniquement** (pas de llava) |
 | **raw_summary** | **Stocké en base**, indexé pour recherche GED |
+| **Suggestion IA** | Champ `suggestion` affiché sur cartes Dashboard (💡) |
 | **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 |
 | **Google Calendar** | **OFF par défaut**, bouton manuel ; procédure README |
 | **Notifications V1** | **App ouverte uniquement** ; launchd en V1.1 |
 | **HEIC** | **Oui V1** via `pillow-heif` |
 | **Backup zip** | Plus tard (Time Machine suffit) |
-| **Priorisation** | Phase 0 → **Inbox MVP** → Dashboard → GED → Automatisations |
+| **Preview Dashboard** | **Non** — écran épuré ; preview réservée à l'Inbox |
 
 ---
 
 ## 14. Critères d'acceptation (MVP → V1)
 
-### MVP (fin Phase 0–1) — objectif immédiat
+### MVP (Phase 0–1) ✅
 
-- [ ] Déposer un PNG/PDF/HEIC dans Inbox → champs pré-remplis (Ollama ou mock).
-- [ ] Ollama vision lit un screenshot et produit un JSON structuré valide.
-- [ ] Modifier et valider → fichier dans `Pro/GED/` ou `Perso/GED/` avec bon nommage.
-- [ ] `raw_summary` persisté et searchable.
+- [x] Déposer un PNG/PDF/HEIC → champs pré-remplis (Ollama ou mock).
+- [x] Ollama vision produit un JSON multi-tâches valide.
+- [x] Modifier et valider → fichier dans `Pro/GED/` ou `Perso/GED/` avec bon nommage.
+- [x] `raw_summary` persisté et searchable.
 
-### MVP étendu (fin Phase 2)
+### MVP étendu (Phase 2) ✅
 
-- [ ] Tâche visible dans Dashboard, bonne colonne selon deadline.
-- [ ] Tâches sans deadline en sous-section « Sans date ».
-- [ ] Cocher « Fait » → Archivé.
-- [ ] Filtrer Pro / Perso / tags (OR).
-- [ ] Bouton « Modifier » fonctionnel.
+- [x] Tâche visible dans Dashboard, bonne colonne selon deadline.
+- [x] Tâches sans deadline en sous-section « Sans date ».
+- [x] Cocher « Fait » → Archivé.
+- [x] Filtrer Pro / Perso / tags (OR).
+- [x] Bouton « Modifier » fonctionnel.
+- [x] Dépôt + collage depuis le Dashboard sans passer par l'Inbox.
+- [x] Spinner et rafraîchissement Kanban post-analyse.
+- [x] Autopilote + bannière validation manuelle.
 
-### V1 complète (fin Phase 4–5)
+### V1 complète (Phase 4–5) ✅ / 🔄
 
-- [ ] Recherche GED < 1 s sur 100+ documents (titre + raw_summary + tags).
-- [ ] Notifications J-3 et J-1 sur Mac (app ouverte).
-- [ ] Sync Google Calendar manuelle + option auto (OFF par défaut).
-- [ ] README complet : Ollama, Poppler, pillow-heif, Google Calendar, `start.command`.
+- [x] Recherche GED (titre + raw_summary + tags).
+- [x] Notifications J-3 et J-1 sur Mac (app ouverte).
+- [x] Sync Google Calendar manuelle + option auto (OFF par défaut).
+- [x] Toggle Autopilote dans Paramètres.
+- [ ] README complet : workflow Dashboard-first, Ollama, Poppler, HEIC, Google Calendar, `start.command`.
 
 ---
 
 ## Annexe A — Exemple document type
 
-> Courrier URSSAF : « Paiement cotisations avant le 15/06/2026 »  
-> → Catégorie Pro, tags Compta URSSAF, **deadline `2026-06-15`** (date officielle), émission = date du courrier scanné.  
-> → Relances automatiques à J-3 (12/06) et J-1 (14/06).
+> Flyer association avec inscription spectacle **avant le 10/06/2026** et répétition le **12/06/2026**.  
+> → **2 tâches** créées depuis un seul document.  
+> → Catégorie Pro, tags Spectacle / Répétition, deadlines officielles extraites.  
+> → Suggestions IA affichées sur les cartes Dashboard.  
+> → Relances automatiques à J-3 et J-1 pour chaque deadline.
 
 ## Annexe B — Commandes dev
 
@@ -662,8 +805,11 @@ python main.py
 # Vérifier Ollama
 python scripts/check_ollama.py
 ollama pull llama3.2-vision
+
+# Tests
+pytest tests/ -q
 ```
 
 ---
 
-**Prochaine étape** : démarrage **Phase 0** (fondations) puis **Phase 1** (Inbox MVP).
+**État actuel** : V1 fonctionnelle avec interface Dashboard-first, Autopilote, multi-tâches et file d'analyse asynchrone. Prochaine étape recommandée : finaliser le README et préparer V1.1 (notifications hors app).

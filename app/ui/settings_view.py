@@ -19,6 +19,24 @@ def create_settings_view() -> None:
     calendar = CalendarService()
 
     with ui.card().classes("w-full q-mb-md"):
+        ui.label("Mode Autopilote").classes("text-subtitle1 q-mb-sm")
+        ui.label(
+            "Activé : les documents analysés deviennent des tâches automatiquement "
+            "et le fichier est archivé en GED. Désactivé : validation manuelle dans l'Inbox."
+        ).classes("text-caption text-grey-7 q-mb-sm")
+
+        autopilot_switch = ui.switch(
+            "Autopilote (validation automatique)",
+            value=get_setting("autopilot_enabled", "true") == "true",
+        )
+
+        def toggle_autopilot() -> None:
+            set_setting("autopilot_enabled", "true" if autopilot_switch.value else "false")
+            ui.notify("Préférence Autopilote enregistrée.", type="info")
+
+        autopilot_switch.on("update:model-value", toggle_autopilot)
+
+    with ui.card().classes("w-full q-mb-md"):
         ui.label("Relances anti-oubli").classes("text-subtitle1 q-mb-sm")
         ui.label(
             "Notifications macOS à J-3 et J-1 (application ouverte uniquement)."

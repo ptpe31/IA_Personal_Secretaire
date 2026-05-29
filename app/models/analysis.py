@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.utils.tags import normalize_tags
+
 
 def coerce_optional_date(value: object) -> date | None:
     """Normalise les valeurs nulles renvoyées par l'IA (null, \"null\", vide…)."""
@@ -30,8 +32,8 @@ def coerce_required_date(value: object) -> date:
     return date.today()
 
 
-class DocumentAnalysis(BaseModel):
-    """JSON structuré attendu de l'IA (spec §5.2)."""
+class TaskAnalysisItem(BaseModel):
+    """Une tâche actionnable extraite d'un document."""
 
     title: str = Field(..., min_length=1)
     date_emission: date
@@ -39,8 +41,9 @@ class DocumentAnalysis(BaseModel):
     deadline: date | None = None
     category: Literal["pro", "perso"] = "pro"
     tags: list[str] = Field(default_factory=list, max_length=5)
+    justification_proof: str = "Aucune"
+    suggestion: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    raw_summary: str = ""
 
     @field_validator("date_emission", mode="before")
     @classmethod
@@ -54,17 +57,12 @@ class DocumentAnalysis(BaseModel):
 
     @field_validator("tags", mode="before")
     @classmethod
-    def normalize_tags(cls, value: object) -> list[str]:
+    def normalize_tags_field(cls, value: object) -> list[str]:
         if value is None:
             return []
         if isinstance(value, str):
-            value = [value]
-        tags: list[str] = []
-        for tag in value:
-            cleaned = str(tag).strip().lstrip("#")
-            if cleaned and cleaned not in tags:
-                tags.append(cleaned)
-        return tags[:5]
+            return normalize_tags(value)
+        return normalize_tags(list(value))
 
     @field_validator("category", mode="before")
     @classmethod
@@ -75,3 +73,67 @@ class DocumentAnalysis(BaseModel):
         if normalized in ("perso", "personal", "privé", "prive"):
             return "perso"
         return "pro"
+
+    @field_validator("justification_proof", mode="before")
+    @classmethod
+    def normalize_proof(cls, value: object) -> str:
+        if value is None:
+            return "Aucune"
+        text = str(value).strip()
+        return text or "Aucune"
+
+    @field_validator("suggestion", mode="before")
+    @classmethod
+    def normalize_suggestion(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text.lower() in ("", "null", "none", "n/a", "na", "-", "—"):
+            return None
+        return text
+
+
+class DocumentAnalysisResult(BaseModel):
+    """Résultat multi-tâches d'une analyse documentaire."""
+
+    tasks: list[TaskAnalysisItem] = Field(..., min_length=1)
+    document_summary: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @property
+    def primary_task(self) -> TaskAnalysisItem:
+        return self.tasks[0]
+
+
+# Alias rétrocompatibilité (1 tâche = 1 item)
+DocumentAnalysis = TaskAnalysisItem
+
+
+def normalize_analysis_payload(data: dict) -> dict:
+    """Convertit l'ancien format mono-tâche en format multi-tâches."""
+    if "tasks" in data:
+        cleaned = dict(data)
+        if cleaned.get("document_summary") is None:
+            cleaned["document_summary"] = cleaned.get("raw_summary") or ""
+        return cleaned
+
+    task_keys = (
+        "title",
+        "date_emission",
+        "date_event",
+        "deadline",
+        "category",
+        "tags",
+        "justification_proof",
+        "suggestion",
+        "confidence",
+    )
+    task = {key: data[key] for key in task_keys if key in data}
+    if "justification_proof" not in task:
+        task["justification_proof"] = "Aucune"
+
+    return {
+        "tasks": [task],
+        "document_summary": data.get("raw_summary") or data.get("document_summary") or "",
+        "confidence": data.get("confidence", task.get("confidence", 0.5)),
+    }

@@ -1,14 +1,29 @@
-"""Vue Tableau de bord Kanban — spec §6."""
+"""Vue Tableau de bord unifiée — dépôt, statut et Kanban."""
 
 from __future__ import annotations
+
+import logging
+from collections.abc import Callable
 
 from nicegui import ui
 
 from app.models.task import TaskDTO
-from app.services.task_service import archive_task, list_all_tags, list_tasks, refresh_task_statuses
+from app.services.inbox_queue import JobStatus, get_inbox_queue
+from app.services.task_service import (
+    archive_task,
+    delete_task,
+    list_all_tags,
+    list_tasks,
+    refresh_task_statuses,
+)
 from app.ui.calendar_button import add_calendar_sync_button
+from app.ui.document_upload import create_document_intake
+from app.ui.inbox_ui_safe import run_if_client_alive
 from app.ui.task_edit_dialog import open_task_edit_dialog
+from app.ui.tab_registry import register_tab_refresh
 from app.utils.dates import compute_kanban_column, format_date_fr
+
+logger = logging.getLogger(__name__)
 
 CATEGORY_OPTIONS = {
     "all": "Tout",
@@ -17,18 +32,72 @@ CATEGORY_OPTIONS = {
 }
 
 
-def create_dashboard_view() -> None:
-    """Construit le Kanban 3 colonnes avec filtres."""
+def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
+    """Construit la page d'accueil : dépôt en haut, Kanban en bas."""
+    queue = get_inbox_queue()
     state = {"category": "all", "tags": set()}
 
     ui.label("Tableau de bord").classes("text-h5 q-mb-sm")
-    ui.label("Gérez vos tâches par priorité et catégorie.").classes(
-        "text-body2 text-grey-7 q-mb-md"
-    )
+    ui.label(
+        "Déposez vos scans et gérez vos tâches — tout au même endroit."
+    ).classes("text-body2 text-grey-7 q-mb-md")
+
+    with ui.card().classes("w-full q-mb-md q-pa-md"):
+        ui.label("Dépôt de documents & Statut").classes("text-subtitle1 q-mb-sm")
+        create_document_intake(side_by_side=True, compact=True)
+        status_container = ui.column().classes("w-full")
+
+    manual_banner_container = ui.column().classes("w-full q-mb-md")
+
+    ui.separator().classes("q-my-md")
 
     filter_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-md")
     tag_chip_container = ui.row().classes("w-full q-gutter-xs q-mb-md flex-wrap")
     board_container = ui.row().classes("w-full q-col-gutter-md items-start")
+
+    @ui.refreshable
+    def render_processing_status() -> None:
+        status_container.clear()
+        job = queue.active_processing_job()
+        if job is None:
+            return
+        with status_container:
+            with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
+                ui.spinner("dots", size="lg", color="primary")
+                if job.status == JobStatus.QUEUED:
+                    text = f"En attente — {job.filename}"
+                else:
+                    text = (
+                        f"⚙️ Analyse de {job.filename} "
+                        "par la secrétaire IA en cours..."
+                    )
+                ui.label(text).classes("text-body2")
+            ui.linear_progress(indeterminate=True).classes("w-full q-mt-xs")
+
+    @ui.refreshable
+    def render_manual_banner() -> None:
+        manual_banner_container.clear()
+        count = queue.manual_pending_count()
+        if count == 0:
+            return
+        doc_label = "document" if count == 1 else "documents"
+        verb = "nécessite" if count == 1 else "nécessitent"
+        with manual_banner_container:
+            with ui.card().classes("w-full q-pa-sm bg-orange-1"):
+                with ui.row().classes("items-center q-gutter-sm flex-wrap"):
+                    ui.icon("warning", color="orange-10")
+                    ui.label(
+                        f"⚠️ {count} {doc_label} {verb} votre validation manuelle."
+                    ).classes("text-body2")
+
+                    def go_inbox() -> None:
+                        if switch_to_inbox:
+                            switch_to_inbox()
+
+                    ui.button(
+                        "Cliquez ici pour aller à l'Inbox",
+                        on_click=go_inbox,
+                    ).props("flat dense color=primary no-caps")
 
     @ui.refreshable
     def render_tag_filters() -> None:
@@ -36,7 +105,7 @@ def create_dashboard_view() -> None:
         all_tags = list_all_tags()
         with tag_chip_container:
             if not all_tags:
-                ui.label("Aucun tag — validez un document dans l'Inbox.").classes(
+                ui.label("Aucun tag — déposez un document ci-dessus.").classes(
                     "text-caption text-grey-6"
                 )
                 return
@@ -52,7 +121,7 @@ def create_dashboard_view() -> None:
                     render_tag_filters.refresh()
                     render_board.refresh()
 
-                btn = ui.button(f"#{tag}", on_click=toggle).props(
+                ui.button(f"#{tag}", on_click=toggle).props(
                     "dense rounded" + (" color=primary" if selected else " outline")
                 )
 
@@ -81,12 +150,36 @@ def create_dashboard_view() -> None:
         cat_color = "blue-8" if task.category == "pro" else "green-8"
         urgent = column == "urgent"
 
-        card_classes = "w-full q-pa-sm q-mb-sm"
+        card_classes = "w-full q-mb-sm q-pl-md q-pr-sm q-py-sm"
         if urgent:
-            card_classes += " bg-red-1 border-left-4 border-red"
+            card_classes += " bg-red-1 border-left-4 border-red q-pl-lg"
 
-        with ui.card().classes(card_classes).tight():
-            with ui.row().classes("items-center q-gutter-xs"):
+        def confirm_delete(t: TaskDTO = task) -> None:
+            with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
+                ui.label("Supprimer cette tâche ?").classes("text-subtitle1 q-mb-xs")
+                ui.label(t.title).classes("text-body2 q-mb-sm")
+                ui.label(
+                    "Suppression définitive de la base. Le fichier GED n'est pas effacé."
+                ).classes("text-caption text-grey-7 q-mb-md")
+                with ui.row().classes("justify-end q-gutter-sm w-full"):
+                    ui.button("Annuler", on_click=dialog.close).props("flat")
+
+                    def do_delete(tid: int = t.id) -> None:
+                        delete_task(tid)
+                        dialog.close()
+                        ui.notify("Tâche supprimée.", type="positive")
+                        render_board.refresh()
+
+                    ui.button(
+                        "Supprimer",
+                        icon="delete",
+                        on_click=do_delete,
+                    ).props("color=negative unelevated")
+
+            dialog.open()
+
+        with ui.card().classes(card_classes):
+            with ui.row().classes("items-center q-gutter-xs q-mb-xs"):
                 ui.badge(cat_label).props(f"color={cat_color}")
                 ui.label(task.title).classes("text-subtitle2 col")
 
@@ -97,12 +190,17 @@ def create_dashboard_view() -> None:
                 "text-caption"
             )
 
+            if task.suggestion:
+                ui.label(f"💡 {task.suggestion}").classes(
+                    "text-caption text-amber-10 italic q-mt-xs"
+                ).style("color: #b45309;")
+
             if task.tags:
                 ui.label("• Tags : " + " ".join(f"#{t}" for t in task.tags)).classes(
                     "text-caption text-grey-8"
                 )
 
-            with ui.row().classes("items-center q-gutter-sm q-mt-xs"):
+            with ui.row().classes("items-center q-gutter-xs q-mt-xs w-full flex-wrap"):
                 if column == "archived":
 
                     def uncheck() -> None:
@@ -126,8 +224,20 @@ def create_dashboard_view() -> None:
 
                 ui.button(
                     icon="edit",
-                    on_click=lambda t=task: open_task_edit_dialog(t, render_board.refresh),
-                ).props("dense flat round size=sm").tooltip("Modifier")
+                    on_click=lambda t=task: open_task_edit_dialog(
+                        t,
+                        render_board.refresh,
+                        on_deleted=render_board.refresh,
+                    ),
+                ).props("dense flat round size=sm color=primary").tooltip("Modifier")
+
+                ui.button(
+                    "Suppr.",
+                    icon="delete",
+                    on_click=confirm_delete,
+                ).props("dense size=sm color=negative outline").tooltip(
+                    "Supprimer de la base"
+                )
 
                 if column != "archived":
                     add_calendar_sync_button(task, on_synced=render_board.refresh)
@@ -163,7 +273,7 @@ def create_dashboard_view() -> None:
 
         with board_container:
             for col_key, title, color in columns_spec:
-                with ui.column().classes("col").style("min-width: 280px"):
+                with ui.column().classes("col q-pl-xs").style("min-width: 280px"):
                     ui.label(title).classes(f"text-subtitle1 text-{color} q-mb-sm")
 
                     if col_key == "todo":
@@ -189,8 +299,44 @@ def create_dashboard_view() -> None:
                             for task in items:
                                 render_task_card(task, col_key)
 
+    def refresh_dashboard() -> None:
+        refresh_task_statuses()
+        render_processing_status.refresh()
+        render_manual_banner.refresh()
+        render_category_filters.refresh()
+        render_tag_filters.refresh()
+        render_board.refresh()
+
+    def _detach_queue_listener() -> None:
+        queue.remove_listener(on_queue_changed)
+
+    def on_queue_changed() -> None:
+        def _refresh_from_queue() -> None:
+            render_processing_status.refresh()
+            render_manual_banner.refresh()
+            render_board.refresh()
+
+        try:
+            run_if_client_alive(
+                status_container,
+                _refresh_from_queue,
+                on_dead=_detach_queue_listener,
+            )
+        except RuntimeError:
+            _detach_queue_listener()
+
+    queue.add_listener(on_queue_changed)
+    try:
+        status_container.client.on_disconnect(_detach_queue_listener)
+    except RuntimeError:
+        logger.debug("Impossible d'enregistrer on_disconnect sur le Dashboard.")
+
+    render_processing_status()
+    render_manual_banner()
     render_category_filters()
     render_tag_filters()
     render_board()
 
+    register_tab_refresh("dashboard", refresh_dashboard)
     ui.timer(60.0, render_board.refresh)
+    return refresh_dashboard

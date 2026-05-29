@@ -14,4 +14,15 @@ else
   source .venv/bin/activate
 fi
 
-python main.py
+# Arrête une instance déjà lancée sur le port 8080
+if lsof -ti :8080 >/dev/null 2>&1; then
+  echo "Arrêt de l'instance Trankil-v2 existante (port 8080)…"
+  lsof -ti :8080 | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
+# Logs détaillés : TRANKIL_LOG_LEVEL=DEBUG ./start.command
+export TRANKIL_LOG_LEVEL="${TRANKIL_LOG_LEVEL:-INFO}"
+echo "Niveau de logs : ${TRANKIL_LOG_LEVEL}"
+
+exec .venv/bin/python main.py

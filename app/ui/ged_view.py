@@ -7,6 +7,7 @@ from nicegui import ui
 from app.models.archive import ArchiveItem
 from app.services.archive_service import search_archives
 from app.services.task_service import list_all_tags
+from app.ui.tab_registry import register_tab_refresh
 from app.utils.dates import format_date_fr, parse_optional_date
 from app.utils.file_preview import preview_data_url
 from app.utils.finder import open_file, reveal_in_finder
@@ -18,7 +19,7 @@ CATEGORY_OPTIONS = {
 }
 
 
-def create_ged_view() -> None:
+def create_ged_view():
     """Construit la vue Archives avec recherche et preview."""
     state = {
         "category": "all",
@@ -231,3 +232,11 @@ def create_ged_view() -> None:
     render_category_filters()
     render_tag_filters()
     render_results()
+
+    def refresh_ged() -> None:
+        render_category_filters.refresh()
+        render_tag_filters.refresh()
+        render_results.refresh()
+
+    register_tab_refresh("ged", refresh_ged)
+    return refresh_ged

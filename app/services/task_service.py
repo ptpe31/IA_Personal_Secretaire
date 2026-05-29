@@ -3,25 +3,36 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 from app.db.connection import get_connection
 from app.models.task import TaskDTO
 from app.services.ged_service import file_sha256, guess_mime_type, move_inbox_to_ged
+from app.utils.analysis_logging import log_tasks_validated
 from app.utils.dates import compute_db_status, compute_kanban_column, parse_optional_date
+from app.utils.tags import normalize_tags
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TaskValidationInput:
+    title: str
+    date_emission: date
+    date_event: date | None
+    deadline: date | None
+    category: str
+    tags: list[str]
+    raw_summary: str = ""
+    justification_proof: str | None = None
+    suggestion: str | None = None
+
+
 def parse_tags_input(raw: str) -> list[str]:
     """Parse tags séparés par virgules."""
-    tags: list[str] = []
-    for part in raw.split(","):
-        cleaned = part.strip().lstrip("#")
-        if cleaned and cleaned not in tags:
-            tags.append(cleaned)
-    return tags[:5]
+    return normalize_tags(raw)
 
 
 def _upsert_tags(conn, tag_names: list[str]) -> list[int]:
@@ -43,39 +54,38 @@ def _link_task_tags(conn, task_id: int, tag_ids: list[int]) -> None:
         )
 
 
-def validate_inbox_document(
+def validate_inbox_tasks(
     inbox_path: Path,
+    tasks: list[TaskValidationInput],
     *,
-    title: str,
-    date_emission: date,
-    date_event: date | None,
-    deadline: date | None,
-    category: str,
-    tags: list[str],
-    raw_summary: str,
-) -> int:
+    ged_title: str,
+    ged_category: str,
+    ged_date_emission: date,
+    document_summary: str = "",
+) -> list[int]:
     """
-    Valide un document Inbox : GED + documents + tasks + tags.
+    Valide un document Inbox : un fichier GED, un documents, N tasks.
 
     Returns:
-        ID de la tâche créée.
+        IDs des tâches créées.
     """
-    title = title.strip()
-    if not title:
-        raise ValueError("Le titre est obligatoire.")
+    if not tasks:
+        raise ValueError("Au moins une tâche est requise.")
 
-    category = "perso" if category == "perso" else "pro"
+    ged_title = ged_title.strip()
+    if not ged_title:
+        raise ValueError("Le titre GED est obligatoire.")
+
+    ged_category = "perso" if ged_category == "perso" else "pro"
     absolute_path, relative_path = move_inbox_to_ged(
         inbox_path,
-        category=category,
-        date_emission=date_emission,
-        title=title,
+        category=ged_category,
+        date_emission=ged_date_emission,
+        title=ged_title,
     )
 
-    kanban = compute_kanban_column(completed_at=None, deadline=deadline)
-    status = compute_db_status(kanban)
-
     conn = get_connection()
+    task_ids: list[int] = []
     try:
         doc_cursor = conn.execute(
             """
@@ -91,36 +101,103 @@ def validate_inbox_document(
         )
         document_id = int(doc_cursor.lastrowid)
 
-        task_cursor = conn.execute(
-            """
-            INSERT INTO tasks (
-                title, category, date_emission, date_event, deadline,
-                status, document_id, raw_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                title,
-                category,
-                date_emission.isoformat(),
-                date_event.isoformat() if date_event else None,
-                deadline.isoformat() if deadline else None,
-                status,
-                document_id,
-                raw_summary.strip() or None,
-            ),
-        )
-        task_id = int(task_cursor.lastrowid)
+        summary = document_summary.strip()
+        for item in tasks:
+            title = item.title.strip()
+            if not title:
+                raise ValueError("Chaque tâche doit avoir un titre.")
 
-        tag_ids = _upsert_tags(conn, tags)
-        _link_task_tags(conn, task_id, tag_ids)
+            category = "perso" if item.category == "perso" else "pro"
+            kanban = compute_kanban_column(completed_at=None, deadline=item.deadline)
+            status = compute_db_status(kanban)
+            proof = (item.justification_proof or "").strip() or None
+            task_summary = item.raw_summary.strip() or summary or None
+            suggestion = (item.suggestion or "").strip() or None
+
+            task_cursor = conn.execute(
+                """
+                INSERT INTO tasks (
+                    title, category, date_emission, date_event, deadline,
+                    status, document_id, raw_summary, justification_proof, suggestion
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title,
+                    category,
+                    item.date_emission.isoformat(),
+                    item.date_event.isoformat() if item.date_event else None,
+                    item.deadline.isoformat() if item.deadline else None,
+                    status,
+                    document_id,
+                    task_summary,
+                    proof,
+                    suggestion,
+                ),
+            )
+            task_id = int(task_cursor.lastrowid)
+            task_ids.append(task_id)
+
+            tag_ids = _upsert_tags(conn, normalize_tags(item.tags))
+            _link_task_tags(conn, task_id, tag_ids)
+
         conn.commit()
-        logger.info("Tâche %s créée — document %s", task_id, relative_path)
-        return task_id
+        log_tasks_validated(
+            logger,
+            filename=inbox_path.name,
+            document_id=document_id,
+            ged_path=relative_path,
+            document_summary=summary,
+            tasks=tasks,
+            task_ids=task_ids,
+        )
+        return task_ids
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def validate_inbox_document(
+    inbox_path: Path,
+    *,
+    title: str,
+    date_emission: date,
+    date_event: date | None,
+    deadline: date | None,
+    category: str,
+    tags: list[str],
+    raw_summary: str,
+    justification_proof: str | None = None,
+    suggestion: str | None = None,
+) -> int:
+    """
+    Valide un document Inbox (mono-tâche, rétrocompatibilité).
+
+    Returns:
+        ID de la tâche créée.
+    """
+    ids = validate_inbox_tasks(
+        inbox_path,
+        [
+            TaskValidationInput(
+                title=title,
+                date_emission=date_emission,
+                date_event=date_event,
+                deadline=deadline,
+                category=category,
+                tags=tags,
+                raw_summary=raw_summary,
+                justification_proof=justification_proof,
+                suggestion=suggestion,
+            )
+        ],
+        ged_title=title,
+        ged_category=category,
+        ged_date_emission=date_emission,
+        document_summary=raw_summary,
+    )
+    return ids[0]
 
 
 def list_tasks(
@@ -134,7 +211,7 @@ def list_tasks(
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
-            t.calendar_synced, t.calendar_event_id,
+            t.suggestion, t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
         FROM tasks t
@@ -194,6 +271,7 @@ def _row_to_task(row) -> TaskDTO:
         document_id=int(row["document_id"]) if row["document_id"] else None,
         raw_summary=str(row["raw_summary"]) if row["raw_summary"] else None,
         notes=str(row["notes"]) if row["notes"] else None,
+        suggestion=str(row["suggestion"]) if row["suggestion"] else None,
         stored_path=str(row["stored_path"]) if row["stored_path"] else None,
         original_filename=(
             str(row["original_filename"]) if row["original_filename"] else None
@@ -211,7 +289,7 @@ def get_task_by_id(task_id: int) -> TaskDTO | None:
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
-            t.calendar_synced, t.calendar_event_id,
+            t.suggestion, t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
         FROM tasks t
@@ -302,6 +380,22 @@ def unarchive_task(task_id: int) -> None:
         conn.close()
 
 
+def delete_task(task_id: int) -> None:
+    """Supprime définitivement une tâche de la base (tags et notifications associés inclus)."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cursor.rowcount == 0:
+            raise ValueError(f"Tâche {task_id} introuvable.")
+        conn.commit()
+        logger.info("Tâche %s supprimée", task_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def update_task(
     task_id: int,
     *,
@@ -312,6 +406,7 @@ def update_task(
     category: str,
     tags: list[str],
     notes: str | None = None,
+    suggestion: str | None = None,
 ) -> None:
     """Met à jour une tâche existante (spec §6.3 — Modifier)."""
     title = title.strip()
@@ -339,7 +434,7 @@ def update_task(
             """
             UPDATE tasks SET
                 title = ?, category = ?, date_emission = ?, date_event = ?,
-                deadline = ?, status = ?, notes = ?,
+                deadline = ?, status = ?, notes = ?, suggestion = ?,
                 updated_at = datetime('now', 'localtime')
             WHERE id = ?
             """,
@@ -351,6 +446,7 @@ def update_task(
                 deadline.isoformat() if deadline else None,
                 status,
                 notes.strip() if notes else None,
+                suggestion.strip() if suggestion else None,
                 task_id,
             ),
         )

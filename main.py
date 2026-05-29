@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from nicegui import ui
@@ -15,11 +16,20 @@ from app.ui.dashboard_view import create_dashboard_view
 from app.ui.ged_view import create_ged_view
 from app.ui.inbox_view import create_inbox_view
 from app.ui.settings_view import create_settings_view
+from app.ui.tab_registry import refresh_tab
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+
+def _configure_logging() -> None:
+    level_name = os.environ.get("TRANKIL_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -38,23 +48,40 @@ def create_shell() -> None:
 
     with ui.column().classes("w-full q-pa-md"):
         with ui.tabs().classes("w-full") as tabs:
-            inbox_tab = ui.tab("Inbox", icon="inbox")
             dashboard_tab = ui.tab("Tableau de bord", icon="dashboard")
+            inbox_tab = ui.tab("Inbox", icon="inbox")
             ged_tab = ui.tab("Archives", icon="folder")
             settings_tab = ui.tab("Paramètres", icon="settings")
 
-        with ui.tab_panels(tabs, value=inbox_tab).classes("w-full"):
+        tab_keys = {
+            inbox_tab: "inbox",
+            dashboard_tab: "dashboard",
+            ged_tab: "ged",
+        }
+
+        def switch_to_inbox() -> None:
+            tabs.value = inbox_tab
+            refresh_tab("inbox")
+
+        with ui.tab_panels(tabs, value=dashboard_tab).classes("w-full"):
+            with ui.tab_panel(dashboard_tab):
+                create_dashboard_view(switch_to_inbox=switch_to_inbox)
+
             with ui.tab_panel(inbox_tab):
                 create_inbox_view()
-
-            with ui.tab_panel(dashboard_tab):
-                create_dashboard_view()
 
             with ui.tab_panel(ged_tab):
                 create_ged_view()
 
             with ui.tab_panel(settings_tab):
                 create_settings_view()
+
+        def on_tab_change(event) -> None:
+            tab_key = tab_keys.get(event.args)
+            if tab_key:
+                refresh_tab(tab_key)
+
+        tabs.on("update:model-value", on_tab_change)
 
 
 def main() -> None:

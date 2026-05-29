@@ -11,7 +11,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from app.models.analysis import DocumentAnalysis
+from app.models.analysis import DocumentAnalysisResult
+from app.utils.analysis_logging import log_analysis_result
 from app.services.ollama_client import AnalysisClient, get_analysis_client
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,9 @@ class InboxJob:
     source: str
     status: JobStatus
     created_at: datetime = field(default_factory=datetime.now)
-    analysis: DocumentAnalysis | None = None
+    analysis: DocumentAnalysisResult | None = None
     error: str | None = None
+    excluded_task_indices: set[int] = field(default_factory=set)
 
 
 class InboxQueueService:
@@ -47,7 +49,13 @@ class InboxQueueService:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._listeners: list[Listener] = []
         self._worker_task: asyncio.Task | None = None
-        self._client: AnalysisClient = get_analysis_client()
+        self._client: AnalysisClient | None = None
+
+    @property
+    def client(self) -> AnalysisClient:
+        if self._client is None:
+            self._client = get_analysis_client()
+        return self._client
 
     def add_listener(self, listener: Listener) -> None:
         if listener not in self._listeners:
@@ -61,6 +69,12 @@ class InboxQueueService:
         for listener in list(self._listeners):
             try:
                 listener()
+            except RuntimeError as exc:
+                if "client this element belongs to has been deleted" in str(exc).lower():
+                    logger.debug("Listener Inbox ignoré — client NiceGUI déconnecté.")
+                    self._listeners.remove(listener)
+                else:
+                    raise
             except Exception:
                 logger.exception("Listener file Inbox en erreur")
 
@@ -103,6 +117,19 @@ class InboxQueueService:
             1 for job in self.list_jobs() if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
         )
 
+    def manual_pending_count(self) -> int:
+        """Documents en attente de validation manuelle (Inbox)."""
+        return sum(
+            1 for job in self.list_jobs() if job.status in (JobStatus.READY, JobStatus.FAILED)
+        )
+
+    def active_processing_job(self) -> InboxJob | None:
+        """Premier job en file ou en cours d'analyse."""
+        for job in self.list_jobs():
+            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                return job
+        return None
+
     def remove_job(self, job_id: str) -> None:
         self._jobs.pop(job_id, None)
         if job_id in self._order:
@@ -121,35 +148,79 @@ class InboxQueueService:
             self._notify()
 
             try:
-                analysis = await asyncio.to_thread(self._client.analyze_document, job.file_path)
+                analysis = await asyncio.to_thread(self.client.analyze_document, job.file_path)
                 job.analysis = analysis
                 job.status = JobStatus.READY
                 job.error = None
-                logger.info("Analyse terminée — job %s (%s)", job_id, job.filename)
+                log_analysis_result(
+                    logger,
+                    stage="FILE INBOX prête",
+                    filename=job.filename,
+                    result=analysis,
+                    extra=f"job_id={job_id}",
+                )
             except Exception as exc:
                 logger.exception("Analyse échouée — job %s", job_id)
                 job.status = JobStatus.FAILED
                 job.error = str(exc)
 
+            autopilot_done = False
+            if job.status == JobStatus.READY:
+                from app.services.autopilot_service import auto_validate_job, is_autopilot_enabled
+
+                if is_autopilot_enabled():
+                    try:
+                        task_ids = await asyncio.to_thread(auto_validate_job, job)
+                        logger.info(
+                            "Autopilote — %s tâche(s) créée(s) pour « %s »",
+                            len(task_ids),
+                            job.filename,
+                        )
+                        self.remove_job(job_id)
+                        autopilot_done = True
+                        self._notify()
+                        self._queue.task_done()
+                        try:
+                            from nicegui import ui
+
+                            ui.notify(
+                                f"Autopilote — {len(task_ids)} tâche(s) classée(s) "
+                                f"pour « {job.filename} ».",
+                                type="positive",
+                                timeout=6000,
+                            )
+                        except RuntimeError:
+                            pass
+                        continue
+                    except Exception as exc:
+                        logger.exception("Autopilote échoué — job %s", job_id)
+                        job.error = f"Validation automatique échouée : {exc}"
+
             self._notify()
             self._queue.task_done()
+
+            if autopilot_done:
+                continue
 
             try:
                 from nicegui import ui
 
                 if job.status == JobStatus.READY:
-                    title = job.analysis.title if job.analysis else job.filename
+                    count = len(job.analysis.tasks) if job.analysis else 0
                     ui.notify(
-                        f"Analyse terminée : « {title} » — ouvrez la file pour valider.",
-                        type="positive",
+                        f"Analyse terminée — {count} tâche(s) à valider dans l'Inbox "
+                        f"pour « {job.filename} ».",
+                        type="warning",
                         timeout=8000,
                     )
-                else:
+                elif job.status == JobStatus.FAILED:
                     ui.notify(
-                        f"Échec analyse « {job.filename} » : {job.error}",
+                        f"Échec analyse « {job.filename} » — validation manuelle requise.",
                         type="negative",
                         timeout=8000,
                     )
+            except RuntimeError:
+                logger.debug("Notification ignorée — aucun client NiceGUI actif.")
             except Exception:
                 pass
 

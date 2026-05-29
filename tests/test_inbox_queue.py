@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.models.analysis import DocumentAnalysis
+from app.models.analysis import DocumentAnalysisResult, TaskAnalysisItem
 from app.services.inbox_queue import InboxQueueService, JobStatus
 
 
@@ -14,17 +14,19 @@ from app.services.inbox_queue import InboxQueueService, JobStatus
 def queue_service(tmp_path: Path) -> InboxQueueService:
     service = InboxQueueService()
     mock_client = MagicMock()
-    mock_client.analyze_document.return_value = DocumentAnalysis.model_validate(
-        {
-            "title": "Test doc",
-            "date_emission": "2026-05-29",
-            "date_event": None,
-            "deadline": None,
-            "category": "pro",
-            "tags": ["Test"],
-            "confidence": 0.5,
-            "raw_summary": "Résumé test",
-        }
+    mock_client.analyze_document.return_value = DocumentAnalysisResult(
+        tasks=[
+            TaskAnalysisItem(
+                title="Test doc",
+                date_emission=__import__("datetime").date(2026, 5, 29),
+                category="pro",
+                tags=["test"],
+                confidence=0.5,
+                justification_proof="Aucune",
+            )
+        ],
+        document_summary="Résumé test",
+        confidence=0.5,
     )
     service._client = mock_client
     return service
@@ -44,11 +46,24 @@ async def test_worker_processes_job_to_ready(queue_service: InboxQueueService, t
     sample.write_bytes(b"fake")
     job = queue_service.enqueue(sample, "doc.png")
 
-    queue_service.start()
-    await asyncio.sleep(0.05)
+    with patch("app.services.autopilot_service.is_autopilot_enabled", return_value=False):
+        queue_service.start()
+        await asyncio.sleep(0.05)
 
     updated = queue_service.get_job(job.id)
     assert updated is not None
     assert updated.status == JobStatus.READY
     assert updated.analysis is not None
-    assert updated.analysis.title == "Test doc"
+    assert updated.analysis.tasks[0].title == "Test doc"
+
+
+def test_manual_pending_count(queue_service: InboxQueueService, tmp_path: Path):
+    sample = tmp_path / "doc.png"
+    sample.write_bytes(b"fake")
+    job = queue_service.enqueue(sample, "doc.png")
+    assert queue_service.manual_pending_count() == 0
+    assert queue_service.active_processing_job() is not None
+
+    job.status = JobStatus.READY
+    assert queue_service.manual_pending_count() == 1
+    assert queue_service.active_processing_job() is None

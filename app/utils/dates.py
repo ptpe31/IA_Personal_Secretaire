@@ -50,3 +50,37 @@ def format_date_fr(value: date | None) -> str:
     if value is None:
         return "—"
     return value.strftime("%d/%m/%Y")
+
+
+_WEEKDAYS_FR = (
+    "lundi",
+    "mardi",
+    "mercredi",
+    "jeudi",
+    "vendredi",
+    "samedi",
+    "dimanche",
+)
+
+_MONTHS_FR = (
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+)
+
+
+def format_today_anchor(today: date | None = None) -> str:
+    """Ancrage temporel injecté dans le prompt Ollama."""
+    ref = today or date.today()
+    weekday = _WEEKDAYS_FR[ref.weekday()]
+    month = _MONTHS_FR[ref.month - 1]
+    return f"Aujourd'hui nous sommes le {weekday} {ref.day} {month} {ref.year}."

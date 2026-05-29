@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from app.config import DB_PATH, ensure_directories
+from app.db.migrations import apply_schema_migrations
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -18,6 +22,7 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    apply_schema_migrations(conn)
     return conn
 
 
@@ -27,26 +32,44 @@ def _read_schema() -> str:
     return _SCHEMA_PATH.read_text(encoding="utf-8")
 
 
+def run_migrations(conn: sqlite3.Connection | None = None) -> None:
+    """Applique les migrations incrémentales (bases existantes incluses)."""
+    own_conn = conn is None
+    if own_conn:
+        ensure_directories()
+        conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+    try:
+        apply_schema_migrations(conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def init_db(*, force: bool = False) -> None:
     """
     Initialise la base SQLite en exécutant schema.sql.
 
     Si force=False (défaut), n'exécute le schéma que si database.sqlite
     n'existe pas encore. Si force=True, ré-applique le schéma (idempotent).
+    Les migrations incrémentales sont toujours appliquées.
     """
     ensure_directories()
 
     db_exists = DB_PATH.is_file()
-    if db_exists and not force:
-        return
+    if not db_exists or force:
+        schema_sql = _read_schema()
+        conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.executescript(schema_sql)
+            conn.commit()
+        finally:
+            conn.close()
 
-    schema_sql = _read_schema()
-    conn = get_connection()
-    try:
-        conn.executescript(schema_sql)
-        conn.commit()
-    finally:
-        conn.close()
+    run_migrations()
+    logger.info("Base SQLite prête — migrations vérifiées (%s).", DB_PATH)
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
