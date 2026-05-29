@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     raw_summary TEXT,
     justification_proof TEXT,
     suggestion TEXT,
+    recurrence_pattern TEXT CHECK (
+        recurrence_pattern IS NULL
+        OR recurrence_pattern IN ('daily', 'weekly', 'monthly')
+    ),
+    parent_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     calendar_synced INTEGER NOT NULL DEFAULT 0,
     calendar_event_id TEXT,
     created_at DATETIME NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -61,6 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_documents_stored_path ON documents(stored_path);
 CREATE INDEX IF NOT EXISTS idx_tasks_raw_summary ON tasks(raw_summary);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 
 -- Paramètres par défaut (spec §4.1)
 INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_model', 'llama3.2-vision');

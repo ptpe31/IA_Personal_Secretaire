@@ -24,4 +24,6 @@ class TaskDTO:
     calendar_synced: bool = False
     calendar_event_id: str | None = None
     suggestion: str | None = None
+    recurrence_pattern: str | None = None
+    parent_task_id: int | None = None
     tags: list[str] = field(default_factory=list)

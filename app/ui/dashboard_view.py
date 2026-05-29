@@ -19,9 +19,11 @@ from app.services.task_service import (
 from app.ui.calendar_button import add_calendar_sync_button
 from app.ui.document_upload import create_document_intake
 from app.ui.inbox_ui_safe import run_if_client_alive
+from app.ui.manual_task_form import create_manual_task_form
 from app.ui.task_edit_dialog import open_task_edit_dialog
 from app.ui.tab_registry import register_tab_refresh
 from app.utils.dates import compute_kanban_column, format_date_fr
+from app.utils.recurrence import RECURRENCE_DISPLAY
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +44,17 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         "Déposez vos scans et gérez vos tâches — tout au même endroit."
     ).classes("text-body2 text-grey-7 q-mb-md")
 
+    refresh_hooks: dict[str, Callable[[], None]] = {"kanban": lambda: None}
+
     with ui.card().classes("w-full q-mb-md q-pa-md"):
         ui.label("Dépôt de documents & Statut").classes("text-subtitle1 q-mb-sm")
-        create_document_intake(side_by_side=True, compact=True)
+        create_document_intake(
+            triple_column=True,
+            compact=True,
+            third_column=lambda: create_manual_task_form(
+                on_created=lambda: refresh_hooks["kanban"](),
+            ),
+        )
         status_container = ui.column().classes("w-full")
 
     manual_banner_container = ui.column().classes("w-full q-mb-md")
@@ -182,6 +192,9 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
             with ui.row().classes("items-center q-gutter-xs q-mb-xs"):
                 ui.badge(cat_label).props(f"color={cat_color}")
                 ui.label(task.title).classes("text-subtitle2 col")
+                if task.recurrence_pattern:
+                    label = RECURRENCE_DISPLAY.get(task.recurrence_pattern, "Routine")
+                    ui.badge(f"🔁 {label}").props("color=purple-4").classes("text-caption")
 
             ui.label(f"• Reçu le : {format_date_fr(task.date_emission)}").classes(
                 "text-caption"
@@ -216,9 +229,16 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
                     def mark_done(e, tid: int = task.id) -> None:
                         if e.value:
-                            archive_task(tid)
-                            ui.notify("Tâche archivée.", type="positive")
+                            spawned_id = archive_task(tid)
+                            if spawned_id:
+                                ui.notify(
+                                    "Tâche archivée — prochaine occurrence planifiée.",
+                                    type="positive",
+                                )
+                            else:
+                                ui.notify("Tâche archivée.", type="positive")
                             render_board.refresh()
+                            render_tag_filters.refresh()
 
                     ui.checkbox("Fait", on_change=mark_done)
 
@@ -330,6 +350,11 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         status_container.client.on_disconnect(_detach_queue_listener)
     except RuntimeError:
         logger.debug("Impossible d'enregistrer on_disconnect sur le Dashboard.")
+
+    refresh_hooks["kanban"] = lambda: (
+        render_board.refresh(),
+        render_tag_filters.refresh(),
+    )
 
     render_processing_status()
     render_manual_banner()

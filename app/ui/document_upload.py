@@ -152,11 +152,24 @@ def create_document_upload(
 def create_document_intake(
     *,
     side_by_side: bool = False,
+    triple_column: bool = False,
     compact: bool = False,
     on_enqueued: Callable[[InboxJob], None] | None = None,
+    third_column: Callable[[], None] | None = None,
 ) -> ui.upload:
-    """Dépôt complet : collage presse-papiers + glisser-déposer."""
-    if side_by_side:
+    """Dépôt complet : collage presse-papiers + glisser-déposer (+ colonne optionnelle)."""
+    if triple_column and third_column:
+        with ui.row().classes("w-full q-col-gutter-md items-stretch"):
+            with ui.column().classes("col flex"):
+                paste_zone = create_paste_zone()
+                paste_zone.classes(add="full-height flex flex-center")
+            with ui.column().classes("col flex"):
+                with ui.card().classes("w-full full-height q-pa-md").props("flat bordered"):
+                    ui.label("Glisser-déposer un fichier").classes("text-subtitle2 q-mb-sm")
+                    upload = create_document_upload(compact=compact, on_enqueued=on_enqueued)
+            with ui.column().classes("col flex"):
+                third_column()
+    elif side_by_side:
         with ui.row().classes("w-full q-col-gutter-md items-stretch"):
             with ui.column().classes("col flex"):
                 paste_zone = create_paste_zone()

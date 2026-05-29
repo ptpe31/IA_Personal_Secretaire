@@ -25,4 +25,7 @@ fi
 export TRANKIL_LOG_LEVEL="${TRANKIL_LOG_LEVEL:-INFO}"
 echo "Niveau de logs : ${TRANKIL_LOG_LEVEL}"
 
-exec .venv/bin/python main.py
+# Évite les imports obsolètes après une mise à jour du code
+find "$SCRIPT_DIR/app" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+exec .venv/bin/python -B main.py

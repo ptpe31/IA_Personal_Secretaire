@@ -12,6 +12,7 @@ from app.models.task import TaskDTO
 from app.services.ged_service import file_sha256, guess_mime_type, move_inbox_to_ged
 from app.utils.analysis_logging import log_tasks_validated
 from app.utils.dates import compute_db_status, compute_kanban_column, parse_optional_date
+from app.utils.recurrence import RECURRENCE_PATTERNS, compute_next_occurrence
 from app.utils.tags import normalize_tags
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,8 @@ def list_tasks(
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
-            t.suggestion, t.calendar_synced, t.calendar_event_id,
+            t.suggestion, t.recurrence_pattern, t.parent_task_id,
+            t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
         FROM tasks t
@@ -272,6 +274,12 @@ def _row_to_task(row) -> TaskDTO:
         raw_summary=str(row["raw_summary"]) if row["raw_summary"] else None,
         notes=str(row["notes"]) if row["notes"] else None,
         suggestion=str(row["suggestion"]) if row["suggestion"] else None,
+        recurrence_pattern=(
+            str(row["recurrence_pattern"]) if row["recurrence_pattern"] else None
+        ),
+        parent_task_id=(
+            int(row["parent_task_id"]) if row["parent_task_id"] else None
+        ),
         stored_path=str(row["stored_path"]) if row["stored_path"] else None,
         original_filename=(
             str(row["original_filename"]) if row["original_filename"] else None
@@ -289,7 +297,8 @@ def get_task_by_id(task_id: int) -> TaskDTO | None:
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
-            t.suggestion, t.calendar_synced, t.calendar_event_id,
+            t.suggestion, t.recurrence_pattern, t.parent_task_id,
+            t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
         FROM tasks t
@@ -335,20 +344,146 @@ def list_all_tags() -> list[str]:
         conn.close()
 
 
-def archive_task(task_id: int) -> None:
-    """Marque une tâche comme terminée."""
+def create_manual_task(
+    *,
+    title: str,
+    category: str,
+    start_date: date,
+    recurrence_pattern: str | None = None,
+    suggestion: str | None = None,
+) -> int:
+    """Crée une tâche manuelle (sans document GED)."""
+    title = title.strip()
+    if not title:
+        raise ValueError("Le titre est obligatoire.")
+
+    category = "perso" if category == "perso" else "pro"
+    if recurrence_pattern is not None and recurrence_pattern not in RECURRENCE_PATTERNS:
+        raise ValueError(f"Récurrence invalide : {recurrence_pattern}")
+
+    today = date.today()
+    kanban = compute_kanban_column(completed_at=None, deadline=start_date)
+    status = compute_db_status(kanban)
+    suggestion_text = suggestion.strip() if suggestion else None
+
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO tasks (
+                title, category, date_emission, date_event, deadline,
+                status, suggestion, recurrence_pattern
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title,
+                category,
+                today.isoformat(),
+                start_date.isoformat(),
+                start_date.isoformat(),
+                status,
+                suggestion_text,
+                recurrence_pattern,
+            ),
+        )
+        task_id = int(cursor.lastrowid)
+        conn.commit()
+        logger.info(
+            "Tâche manuelle créée — id=%s titre=%r récurrence=%s",
+            task_id,
+            title,
+            recurrence_pattern,
+        )
+        return task_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _spawn_recurrence_task(conn, row) -> int | None:
+    """Insère la prochaine occurrence d'une tâche récurrente archivée."""
+    pattern = row["recurrence_pattern"]
+    if not pattern or pattern not in RECURRENCE_PATTERNS:
+        return None
+
+    reference = row["deadline"] or row["date_event"] or row["date_emission"]
+    if not reference:
+        return None
+
+    base_date = date.fromisoformat(str(reference))
+    next_deadline = compute_next_occurrence(base_date, str(pattern))
+    root_id = int(row["parent_task_id"]) if row["parent_task_id"] else int(row["id"])
+
+    kanban = compute_kanban_column(completed_at=None, deadline=next_deadline)
+    status = compute_db_status(kanban)
+    today = date.today()
+
+    cursor = conn.execute(
+        """
+        INSERT INTO tasks (
+            title, category, date_emission, date_event, deadline,
+            status, suggestion, recurrence_pattern, parent_task_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(row["title"]),
+            str(row["category"]),
+            today.isoformat(),
+            next_deadline.isoformat(),
+            next_deadline.isoformat(),
+            status,
+            row["suggestion"],
+            pattern,
+            root_id,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def archive_task(task_id: int) -> int | None:
+    """
+    Marque une tâche comme terminée.
+
+    Returns:
+        ID de la prochaine occurrence si la tâche est récurrente, sinon None.
+    """
     now = datetime.now().replace(microsecond=0).isoformat(sep=" ")
     conn = get_connection()
     try:
+        row = conn.execute(
+            """
+            SELECT id, title, category, date_emission, date_event, deadline,
+                   suggestion, recurrence_pattern, parent_task_id
+            FROM tasks WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Tâche {task_id} introuvable.")
+
         conn.execute(
             """
             UPDATE tasks
-            SET completed_at = ?, status = 'archived', updated_at = datetime('now', 'localtime')
+            SET completed_at = ?, status = 'archived',
+                updated_at = datetime('now', 'localtime')
             WHERE id = ?
             """,
             (now, task_id),
         )
+        spawned_id = _spawn_recurrence_task(conn, row)
         conn.commit()
+        if spawned_id:
+            logger.info(
+                "Récurrence — tâche %s archivée, prochaine occurrence %s",
+                task_id,
+                spawned_id,
+            )
+        return spawned_id
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -108,6 +108,18 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         column="suggestion",
         definition="TEXT",
     )
+    _add_column_if_missing(
+        conn,
+        table="tasks",
+        column="recurrence_pattern",
+        definition="TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        table="tasks",
+        column="parent_task_id",
+        definition="INTEGER REFERENCES tasks(id) ON DELETE SET NULL",
+    )
     backfill_task_suggestions(conn)
 
     if _table_exists(conn, "settings"):
