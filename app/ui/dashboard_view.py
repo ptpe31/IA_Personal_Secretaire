@@ -24,7 +24,6 @@ from app.ui.task_edit_dialog import open_task_edit_dialog
 from app.ui.tab_registry import register_tab_refresh
 from app.ui.google_theme import (
     BADGE_RECURRENCE,
-    CARD_GOOGLE,
     COLUMN_ARCHIVED_BADGE,
     COLUMN_TODO_BADGE,
     COLUMN_URGENT_BADGE,
@@ -35,8 +34,15 @@ from app.ui.google_theme import (
     category_badge_classes,
     chip_classes,
     render_date_meta,
+    task_card_classes,
 )
-from app.utils.dates import compute_kanban_column, format_date_fr, sort_kanban_todo, sort_kanban_urgent
+from app.utils.dates import (
+    compute_kanban_column,
+    format_date_fr,
+    sort_kanban_no_date,
+    sort_kanban_todo,
+    sort_kanban_urgent,
+)
 from app.utils.recurrence import RECURRENCE_DISPLAY
 
 logger = logging.getLogger(__name__)
@@ -179,9 +185,11 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         cat_label = "Pro" if task.category == "pro" else "Perso"
         urgent = column == "urgent"
 
-        card_classes = CARD_GOOGLE
-        if urgent:
-            card_classes += " trankil-task-card-urgent"
+        card_classes = task_card_classes(
+            document_id=task.document_id,
+            created_at=task.created_at,
+            urgent=urgent,
+        )
 
         def confirm_delete(t: TaskDTO = task) -> None:
             with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
@@ -307,6 +315,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
         buckets["urgent"] = sort_kanban_urgent(buckets["urgent"])
         buckets["todo"] = sort_kanban_todo(buckets["todo"])
+        buckets["todo_no_date"] = sort_kanban_no_date(buckets["todo_no_date"])
 
         board_container.clear()
         columns_spec = [

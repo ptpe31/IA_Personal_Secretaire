@@ -26,4 +26,5 @@ class TaskDTO:
     suggestion: str | None = None
     recurrence_pattern: str | None = None
     parent_task_id: int | None = None
+    created_at: datetime | None = None
     tags: list[str] = field(default_factory=list)

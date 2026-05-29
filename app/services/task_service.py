@@ -211,7 +211,7 @@ def list_tasks(
     query = """
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
-            t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
+            t.status, t.completed_at, t.document_id, t.created_at, t.raw_summary, t.notes,
             t.suggestion, t.recurrence_pattern, t.parent_task_id,
             t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
@@ -271,6 +271,9 @@ def _row_to_task(row) -> TaskDTO:
             else None
         ),
         document_id=int(row["document_id"]) if row["document_id"] else None,
+        created_at=(
+            datetime.fromisoformat(str(row["created_at"])) if row["created_at"] else None
+        ),
         raw_summary=str(row["raw_summary"]) if row["raw_summary"] else None,
         notes=str(row["notes"]) if row["notes"] else None,
         suggestion=str(row["suggestion"]) if row["suggestion"] else None,
@@ -296,7 +299,7 @@ def get_task_by_id(task_id: int) -> TaskDTO | None:
     query = """
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
-            t.status, t.completed_at, t.document_id, t.raw_summary, t.notes,
+            t.status, t.completed_at, t.document_id, t.created_at, t.raw_summary, t.notes,
             t.suggestion, t.recurrence_pattern, t.parent_task_id,
             t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,

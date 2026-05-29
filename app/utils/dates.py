@@ -54,14 +54,53 @@ def format_date_fr(value: date | None) -> str:
     return value.strftime("%d/%m/%Y")
 
 
+def kanban_batch_sort_key(task: T) -> tuple[int, int | str, int]:
+    """Clé de regroupement : lot document ou création manuelle (même seconde)."""
+    doc_id = getattr(task, "document_id", None)
+    if doc_id is not None:
+        return (0, doc_id, 0)
+    created_at = getattr(task, "created_at", None)
+    if created_at is not None:
+        stamp = created_at.replace(microsecond=0).isoformat()
+        return (1, stamp, 0)
+    return (2, getattr(task, "id", 0), 0)
+
+
 def sort_kanban_urgent(tasks: list[T]) -> list[T]:
-    """Tri « En retard / urgent » : deadline la plus ancienne en premier."""
-    return sorted(tasks, key=lambda task: task.deadline or date.max)
+    """Tri urgent : lot regroupé, puis deadline ASC (plus ancienne en haut)."""
+    return sorted(
+        tasks,
+        key=lambda task: (
+            kanban_batch_sort_key(task),
+            task.deadline or date.max,
+            getattr(task, "id", 0),
+        ),
+    )
 
 
 def sort_kanban_todo(tasks: list[T]) -> list[T]:
-    """Tri « À faire » : échéance la plus proche en haut, sans deadline en bas."""
-    return sorted(tasks, key=lambda task: (task.deadline is None, task.deadline or date.max))
+    """Tri à faire : lot regroupé, puis deadline ASC (sans date en bas du bucket)."""
+    return sorted(
+        tasks,
+        key=lambda task: (
+            kanban_batch_sort_key(task),
+            task.deadline is None,
+            task.deadline or date.max,
+            getattr(task, "id", 0),
+        ),
+    )
+
+
+def sort_kanban_no_date(tasks: list[T]) -> list[T]:
+    """Tri sans date : lot regroupé, puis ordre de création."""
+    return sorted(
+        tasks,
+        key=lambda task: (
+            kanban_batch_sort_key(task),
+            getattr(task, "created_at", None) or datetime.min,
+            getattr(task, "id", 0),
+        ),
+    )
 
 
 _WEEKDAYS_FR = (

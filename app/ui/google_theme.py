@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 GOOGLE_CSS = """
 body, .nicegui-content {
     background-color: #f9fafb !important;
@@ -62,10 +64,7 @@ body, .nicegui-content {
     border-color: #ceead6 !important;
 }
 .trankil-task-card {
-    background: #ffffff;
     border-radius: 16px;
-    border: 1px solid #e5e7eb;
-    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
     transition: box-shadow 0.2s ease;
 }
 .trankil-task-card:hover {
@@ -103,16 +102,30 @@ body, .nicegui-content {
 }
 """
 
-# Quasar utility bundles (sans Tailwind — natif NiceGUI)
+# Quasar utility bundles + Tailwind (NiceGUI tailwind=True)
 PAGE_BG = "trankil-page"
-CARD_GOOGLE = "trankil-task-card w-full q-mb-sm q-pa-md"
+
+# Pastel Google Keep — une couleur par lot document (document_id % 6)
+BATCH_PASTEL_PALETTE: tuple[str, ...] = (
+    "bg-blue-50/40 border-blue-100",      # 0 — Bleu doux
+    "bg-amber-50/50 border-amber-100",    # 1 — Jaune Keep
+    "bg-purple-50/40 border-purple-100",  # 2 — Lilas
+    "bg-teal-50/40 border-teal-100",      # 3 — Menthe
+    "bg-rose-50/40 border-rose-100",      # 4 — Rose poudré
+    "bg-orange-50/40 border-orange-100",  # 5 — Abricot
+)
+
+CARD_SHELL = (
+    "trankil-task-card w-full q-mb-sm q-pa-md rounded-2xl border shadow-sm "
+    "hover:shadow-md transition-shadow duration-200"
+)
+CARD_GOOGLE = f"{CARD_SHELL} bg-white border-gray-200"
 EXPANSION_GOOGLE = "trankil-expansion w-full q-mb-md"
 BADGE_PRO = "bg-blue-1 text-blue-9 text-xs font-medium rounded-full q-px-sm q-py-xs"
 BADGE_PERSO = "bg-green-1 text-green-9 text-xs font-medium rounded-full q-px-sm q-py-xs"
 BADGE_RECURRENCE = "bg-purple-1 text-purple-9 text-xs rounded-full q-px-sm q-py-xs"
 SUGGESTION_BOX = (
-    "bg-amber-1 text-grey-9 q-pa-sm rounded-borders text-sm "
-    "border border-amber-3"
+    "bg-white/80 border border-gray-200/50 text-grey-9 q-pa-sm rounded-borders text-sm"
 )
 COLUMN_URGENT_BADGE = "bg-red-1 text-red-9 text-xs rounded-full q-px-sm q-py-xs"
 COLUMN_TODO_BADGE = "bg-blue-1 text-blue-9 text-xs rounded-full q-px-sm q-py-xs"
@@ -144,6 +157,36 @@ def chip_classes(category_key: str, active_key: str) -> str:
 
 def category_badge_classes(category: str) -> str:
     return BADGE_PRO if category == "pro" else BADGE_PERSO
+
+
+def batch_color_index(
+    document_id: int | None,
+    created_at: datetime | None = None,
+) -> int | None:
+    """Index palette 0–5 : lot document ou création manuelle (même seconde)."""
+    if document_id is not None:
+        return document_id % len(BATCH_PASTEL_PALETTE)
+    if created_at is not None:
+        stamp = int(created_at.replace(microsecond=0).strftime("%Y%m%d%H%M%S"))
+        return stamp % len(BATCH_PASTEL_PALETTE)
+    return None
+
+
+def task_card_classes(
+    *,
+    document_id: int | None,
+    created_at: datetime | None = None,
+    urgent: bool = False,
+) -> str:
+    """Classes carte Kanban : fond pastel partagé par lot (document ou création)."""
+    color_idx = batch_color_index(document_id, created_at)
+    if color_idx is None:
+        classes = f"{CARD_SHELL} bg-white border-gray-200"
+    else:
+        classes = f"{CARD_SHELL} {BATCH_PASTEL_PALETTE[color_idx]}"
+    if urgent:
+        classes += " trankil-task-card-urgent"
+    return classes
 
 
 def render_date_meta(*, icon: str, label: str, value: str) -> None:

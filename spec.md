@@ -128,8 +128,60 @@ Clés OpenRouter : Paramètres UI ou `OPENROUTER_API_KEY` dans `.env`.
 |---------|-------|
 | `python main.py` | Développement et Terminal |
 | **`start.command`** | Double-clic sur le Bureau — confort quotidien entrepreneur |
+| **LaunchAgent** | Démarrage automatique au login + relance si crash (`KeepAlive`) |
 
 Le script `start.command` active le venv, purge les `__pycache__`, libère le port 8080 si occupé, lance l'app (`python -B main.py`) et ouvre le navigateur sur `http://localhost:8080`. Variable optionnelle : `TRANKIL_LOG_LEVEL=DEBUG`.
+
+#### 2.4.1 Service LaunchAgent (macOS)
+
+Service **launchd** pour lancer l'app en arrière-plan à chaque connexion utilisateur.
+
+| Élément | Valeur |
+|---------|--------|
+| Fichier plist | `~/Library/LaunchAgents/com.lala.IA_secretaire.plist` |
+| Label | `com.lala.IA_secretaire` |
+| Script exécuté | `/Users/lala/Dev/IA_Personal_Secretaire/start.command` |
+| Répertoire de travail | `/Users/lala/Dev/IA_Personal_Secretaire` |
+
+**Installation / activation** (après création du plist) :
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
+```
+
+**Vérifier que le service tourne** :
+
+```bash
+launchctl list | grep IA_secretaire
+# ou
+launchctl print "gui/$(id -u)/com.lala.IA_secretaire"
+```
+
+**Désactiver le service (temporaire)** — arrêt immédiat, le plist reste en place (pas de relance au prochain login tant qu'il n'est pas rechargé) :
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
+```
+
+**Désactiver le service (définitif)** — arrêt + suppression du plist :
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
+rm ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
+```
+
+**Réactiver après une désactivation temporaire** :
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
+```
+
+> **Migration** : l'ancien nom `com.lala.trankilv2.plist` est obsolète. S'il existe encore, le retirer avant d'installer le nouveau service :
+>
+> ```bash
+> launchctl unload ~/Library/LaunchAgents/com.lala.trankilv2.plist 2>/dev/null
+> rm ~/Library/LaunchAgents/com.lala.trankilv2.plist 2>/dev/null
+> ```
 
 ---
 
@@ -901,6 +953,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
+- [x] LaunchAgent `com.lala.IA_secretaire` — démarrage auto au login (§ 2.4.1)
 - [ ] Daemon `launchd` pour notifications app fermée
 - [ ] Export backup zip `~/Trankil-v2`
 - [ ] Chemin racine configurable
@@ -924,7 +977,7 @@ IA_Personal_Secretaire/          # dépôt git
 | **Chemin racine** | **`~/Trankil-v2` fixe** V1 |
 | **PDF** | **Page 1** uniquement V1 |
 | **Poppler** | Prérequis Homebrew, documenté README |
-| **Lancement** | `python main.py` + **`start.command`** sur le Bureau |
+| **Lancement** | `python main.py` + **`start.command`** sur le Bureau + **LaunchAgent** `com.lala.IA_secretaire` (optionnel, § 2.4.1) |
 | **Modèle IA natif** | **Gemini** (`gemini-2.5-flash`) via SDK `google-genai` |
 | **Modèle IA Éco** | **OpenRouter** — Qwen VL (`qwen/qwen-2.5-vl-72b-instruct`) |
 | **Sélecteur moteur** | Paramètres → `active_ia_provider` |
@@ -1002,6 +1055,7 @@ python scripts/init_db.py
 # Lancer l'app
 python main.py
 # ou double-clic sur start.command
+# ou LaunchAgent com.lala.IA_secretaire (démarrage auto au login — voir § 2.4.1)
 
 # Configuration IA (copier .env.example → .env)
 cp .env.example .env
