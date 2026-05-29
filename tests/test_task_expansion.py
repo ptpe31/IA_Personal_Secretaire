@@ -23,23 +23,23 @@ def test_extract_french_event_dates_list_and_single():
     ]
 
 
-def test_expand_single_task_into_five_hiphop():
+def test_expand_single_task_into_multiple_dates():
     result = DocumentAnalysisResult(
         tasks=[
             TaskAnalysisItem(
-                title="Répétition Hip-Hop 1/4",
+                title="Atelier danse",
                 date_emission=date(2026, 5, 26),
                 deadline=date(2026, 6, 4),
                 category="perso",
-                tags=["danse", "hiphop"],
+                tags=["danse"],
                 justification_proof=(
-                    "les répétitions auront lieu les 4, 11, 18 et 25 juin de 18h à 19h. "
+                    "les séances auront lieu les 4, 11, 18 et 25 juin de 18h à 19h. "
                     "inscription par mail ou au 05.62.11.62.66. "
                     "spectacle samedi 27 juin 2026 à l'Astrolab'"
                 ),
             )
         ],
-        document_summary="Mail hip-hop service culturel",
+        document_summary="Mail association culturelle",
         confidence=0.7,
     )
 
@@ -47,6 +47,5 @@ def test_expand_single_task_into_five_hiphop():
     assert len(expanded.tasks) == 5
     assert expanded.tasks[0].suggestion == "Horaires de l'atelier : 18h à 19h"
     assert "inscription" in (expanded.tasks[-1].suggestion or "").lower()
-    assert expanded.tasks[0].title == "Répétition Hip-Hop 1/4"
-    assert expanded.tasks[-1].title == "Spectacle de fin d'année Hip-Hop"
+    assert expanded.tasks[0].title == "Atelier danse (1/4)"
     assert expanded.tasks[-1].deadline == date(2026, 6, 27)

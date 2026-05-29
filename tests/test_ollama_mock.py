@@ -110,13 +110,14 @@ def test_mock_client_returns_valid_analysis(tmp_path):
     assert client.is_mock is True
 
 
-def test_mock_client_hiphop_pack(tmp_path):
+def test_mock_client_returns_single_generic_task(tmp_path):
     sample = tmp_path / "mail_hiphop_culture.png"
     sample.write_bytes(b"fake")
     client = MockOllamaClient()
     result = client.analyze_document(sample)
-    assert len(result.tasks) == 5
-    assert result.tasks[-1].title.startswith("Spectacle")
+    assert len(result.tasks) == 1
+    assert "Traiter le document" in result.tasks[0].title
+    assert result.tasks[0].category in ("pro", "perso")
 
 
 def test_document_analysis_alias():

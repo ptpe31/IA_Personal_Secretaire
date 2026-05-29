@@ -9,8 +9,6 @@ def infer_rehearsal_suggestion(blob: str) -> str | None:
     match = re.search(r"(\d{1,2}h(?:\s*à\s*\d{1,2}h)?)", blob, re.IGNORECASE)
     if match:
         return f"Horaires de l'atelier : {match.group(1)}"
-    if re.search(r"\d{1,2}h\s*à\s*\d{1,2}h", blob, re.IGNORECASE):
-        return "Horaires de l'atelier : 18h à 19h"
     return None
 
 

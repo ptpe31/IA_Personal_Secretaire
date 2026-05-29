@@ -72,13 +72,6 @@ def backfill_task_suggestions(conn: sqlite3.Connection) -> None:
         else:
             suggestion = infer_spectacle_suggestion(blob) or infer_rehearsal_suggestion(blob)
 
-        if not suggestion and "spectacle" in title_lower and "hip" in title_lower:
-            suggestion = "Faire l'inscription par mail ou au 05.62.11.62.66"
-        if not suggestion and (
-            "répétition" in title_lower or "repetition" in title_lower
-        ):
-            suggestion = "Horaires de l'atelier : 18h à 19h"
-
         if suggestion:
             conn.execute(
                 "UPDATE tasks SET suggestion = ? WHERE id = ?",

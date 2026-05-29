@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.3-implemented  
+> **Version** : 0.4-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — interface unifiée, Autopilote, multi-tâches  
+> **Statut** : V1 fonctionnelle — panneau escamotable, routines récurrentes  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -113,7 +113,7 @@ pypdf                    # métadonnées PDF (optionnel)
 | `python main.py` | Développement et Terminal |
 | **`start.command`** | Double-clic sur le Bureau — confort quotidien entrepreneur |
 
-Le script `start.command` active le venv, libère le port 8080 si occupé, lance l'app et ouvre le navigateur sur `http://localhost:8080`. Variable optionnelle : `TRANKIL_LOG_LEVEL=DEBUG`.
+Le script `start.command` active le venv, purge les `__pycache__`, libère le port 8080 si occupé, lance l'app (`python -B main.py`) et ouvre le navigateur sur `http://localhost:8080`. Variable optionnelle : `TRANKIL_LOG_LEVEL=DEBUG`.
 
 ---
 
@@ -184,6 +184,8 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | `raw_summary` | TEXT NULL | Résumé document IA — indexé pour recherche GED |
 | `justification_proof` | TEXT NULL | Citation / preuve extraite par l'IA pour la tâche |
 | `suggestion` | TEXT NULL | Conseil actionnable IA (ex. numéro à appeler, horaires) |
+| `recurrence_pattern` | TEXT NULL | `'daily'` \| `'weekly'` \| `'monthly'` — routine récurrente |
+| `parent_task_id` | INTEGER FK NULL | Lien vers la tâche d'origine d'une routine (`tasks.id`) |
 | `calendar_synced` | BOOLEAN DEFAULT 0 | Événement Google créé |
 | `calendar_event_id` | TEXT NULL | ID événement Google |
 | `created_at` | DATETIME | Création enregistrement |
@@ -260,6 +262,8 @@ SINON → À FAIRE
 
 **Multi-tâches** : un même document peut produire plusieurs tâches (ex. courrier avec plusieurs échéances). Toutes partagent le même `document_id` après validation.
 
+**Routines récurrentes** : une tâche manuelle peut porter un `recurrence_pattern`. Lors de l'archivage (« Fait »), la prochaine occurrence est créée automatiquement avec la même routine ; `parent_task_id` pointe vers la tâche racine.
+
 ### 4.3 Index recommandés
 
 ```sql
@@ -268,6 +272,7 @@ CREATE INDEX idx_tasks_category ON tasks(category);
 CREATE INDEX idx_tasks_status ON tasks(status);
 CREATE INDEX idx_documents_stored_path ON documents(stored_path);
 CREATE INDEX idx_tasks_raw_summary ON tasks(raw_summary);  -- recherche GED
+CREATE INDEX idx_tasks_parent ON tasks(parent_task_id);    -- routines récurrentes
 ```
 
 ---
@@ -282,50 +287,96 @@ La page est divisée en **deux sections verticales** :
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  SECTION HAUTE — Dépôt de documents & Statut                │
-│  ┌──────────────────────┬──────────────────────────────────┐│
-│  │ Coller capture ⌘V    │ Glisser-déposer / choisir fichier││
-│  └──────────────────────┴──────────────────────────────────┘│
-│  [spinner + barre progression + message d'état Ollama]        │
-│  [bannière validation manuelle → lien Inbox si nécessaire]    │
+│  ▼ Dépôt de documents & Statut  (ui.expansion — repliable)   │
+│  ┌──────────────┬──────────────┬──────────────────────────┐ │
+│  │ Coller ⌘V    │ Glisser-dép. │ Création manuelle/Routine│ │
+│  └──────────────┴──────────────┴──────────────────────────┘ │
+│  [spinner + barre progression + message d'état Ollama]       │
 ├─────────────────────────────────────────────────────────────┤
-│  SECTION BASSE — Filtres + Kanban                             │
-│  Filtrer : [Tout] [Pro] [Perso]   #tag1 #tag2 …              │
-│  ┌─────────────┬─────────────┬─────────────┐                  │
-│  │ EN RETARD   │ À FAIRE     │ ARCHIVÉ     │                  │
-│  └─────────────┴─────────────┴─────────────┘                  │
+│  [bannière validation manuelle Inbox — toujours visible]     │
+├─────────────────────────────────────────────────────────────┤
+│  SECTION BASSE — Filtres + Kanban                            │
+│  Filtrer : [Tout] [Pro] [Perso]   #tag1 #tag2 …             │
+│  ┌─────────────┬─────────────┬─────────────┐                 │
+│  │ EN RETARD   │ À FAIRE     │ ARCHIVÉ     │                 │
+│  └─────────────┴─────────────┴─────────────┘                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **Pas de prévisualisation document** sur cette vue — écran volontairement épuré.
 
-### 5.2 Dépôt de documents
+### 5.2 Panneau escamotable (`ui.expansion`)
 
-Module partagé : `app/ui/document_upload.py` (`create_document_intake`).
+La zone haute est un **accordéon NiceGUI** (`ui.expansion`) pour maximiser l'espace vertical du Kanban :
 
-| Zone | Comportement |
-|------|--------------|
-| **Coller une image** | Carte cliquable ; focus → ⌘V / Ctrl+V envoie l'image au pipeline d'upload |
-| **Glisser-déposer** | Accepte `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, **`.heic`** |
-| **Traitement** | Copie dans `~/Trankil-v2/.inbox/{uuid}_{original_name}` → enqueue `InboxQueueService` |
+| Propriété | Valeur |
+|-----------|--------|
+| Titre | « Dépôt de documents & Statut » |
+| Icône | `cloud_upload` |
+| État par défaut | **Déplié** (`value=True`) au premier chargement |
+| Style en-tête | Texte gras, fond gris clair (`bg-grey-2`), bordure discrète |
+| Comportement | Clic sur l'en-tête → repli/dépli animé (Quasar) |
 
-Les deux zones sont **côte à côte** (layout `ui.row`, deux colonnes égales).
+**Auto-dépliage** : si un fichier est en cours d'analyse Ollama, le panneau se rouvre automatiquement pour afficher le spinner.
 
-### 5.3 Indicateur « En cours de traitement »
+La **bannière validation manuelle Inbox** (§5.5) reste **hors** du panneau, visible même replié.
 
-Pendant l'analyse Ollama (file FIFO) :
+### 5.3 Dépôt de documents (3 colonnes)
+
+Modules : `app/ui/document_upload.py` (`create_document_intake`) + `app/ui/manual_task_form.py`.
+
+| Colonne | Composant | Comportement |
+|---------|-----------|--------------|
+| **1 — Coller** | `create_paste_zone()` | Focus → ⌘V / Ctrl+V envoie l'image au pipeline |
+| **2 — Glisser-déposer** | `ui.upload` | `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, **`.heic`** |
+| **3 — Création manuelle** | Formulaire compact | Tâche sans document GED (§5.4) |
+
+Traitement fichiers : copie dans `~/Trankil-v2/.inbox/{uuid}_{original_name}` → enqueue `InboxQueueService`.
+
+Layout `ui.row` à **3 colonnes égales** (`triple_column=True`), contenu entièrement **à l'intérieur** du `ui.expansion`.
+
+### 5.4 Création manuelle & routines récurrentes
+
+Formulaire « Création manuelle / Routine » (`manual_task_form.py`) :
+
+| Champ | Widget | Description |
+|-------|--------|-------------|
+| Titre / Action | `ui.input` | Obligatoire (ex. « Envoyer la compta ») |
+| Catégorie | `ui.radio` | Pro / Perso |
+| Date de départ | `ui.input type=date` | Première échéance → `deadline` |
+| Récurrence | `ui.select` | Aucune, Quotidien, Hebdomadaire, Mensuel |
+| Suggestion / Note | `ui.input` | Optionnel |
+| Action | `ui.button` | « Créer la tâche » (icône `add`) |
+
+Service : `create_manual_task()` dans `task_service.py`.
+
+**Récurrence à l'archivage** (`archive_task()`) — logique dans `app/utils/recurrence.py` :
+
+| Pattern SQLite | Libellé UI | Prochaine échéance |
+|----------------|------------|-------------------|
+| `daily` | Quotidien | +1 jour |
+| `weekly` | Hebdomadaire | +7 jours |
+| `monthly` | Mensuel | +1 mois (`relativedelta`) |
+
+Lors du clic « Fait » sur une tâche récurrente : archivage + création immédiate de la prochaine occurrence (`todo`) avec même titre, catégorie, suggestion et `recurrence_pattern`. Badge **🔁 Quotidien/Hebdomadaire/Mensuel** sur les cartes Kanban.
+
+Migration SQLite : colonnes `recurrence_pattern` et `parent_task_id` ajoutées via `migrations.py` au démarrage.
+
+### 5.5 Indicateur « En cours de traitement »
+
+Pendant l'analyse Ollama (file FIFO), **à l'intérieur du panneau déplié** :
 
 - **Spinner** NiceGUI (`ui.spinner`) + **barre de progression** linéaire indéterminée
 - Texte d'état :
   - En attente : `En attente — [Nom_du_fichier]`
   - En cours : `⚙️ Analyse de [Nom_du_fichier] par la secrétaire IA en cours...`
-- À la fin : disparition du spinner + **rafraîchissement instantané** des colonnes Kanban (listener sur la file + `register_tab_refresh`)
+- À la fin : disparition du spinner + **rafraîchissement instantané** des colonnes Kanban
 
 Transitions non bloquantes : analyse en `asyncio.to_thread`, garde-fous client NiceGUI (`inbox_ui_safe.py`).
 
-### 5.4 Bannière validation manuelle
+### 5.6 Bannière validation manuelle
 
-Affichée si `manual_pending_count() > 0` (jobs `READY` ou `FAILED` dans la file) :
+Affichée **sous** le panneau escamotable si `manual_pending_count() > 0` :
 
 ```
 ⚠️ N document(s) nécessite(nt) votre validation manuelle.
@@ -334,7 +385,7 @@ Affichée si `manual_pending_count() > 0` (jobs `READY` ou `FAILED` dans la file
 
 Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 
-### 5.5 Filtres globaux
+### 5.7 Filtres globaux
 
 | Filtre | Comportement |
 |--------|--------------|
@@ -343,7 +394,7 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 | **Perso uniquement** | `category = 'perso'` |
 | **Méta-tags** | Chips cliquables ; multi-sélection en logique **OR** |
 
-### 5.6 Colonnes Kanban
+### 5.8 Colonnes Kanban
 
 | Colonne | Contenu | Style |
 |---------|---------|-------|
@@ -352,10 +403,10 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 | ↳ *Sans date* | Non archivées, `deadline IS NULL` | Sous-section en **bas** de la colonne « À FAIRE » |
 | **ARCHIVÉ** | `completed_at` renseigné | Vert discret |
 
-### 5.7 Carte tâche
+### 5.9 Carte tâche
 
 ```
-[Pro] Mettre à jour Expo
+[Pro] Mettre à jour Expo                    [🔁 Mensuel]
 • Reçu le : 28/05/2026
 • Deadline : 26/06/2026
 💡 Faire l'inscription par mail ou au 05.62.11.62.66
@@ -364,16 +415,16 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 ```
 
 Interactions :
-- **Checkbox « Fait »** → archivage
+- **Checkbox « Fait »** → archivage ; si récurrente → prochaine occurrence créée automatiquement
 - **Bouton « Modifier »** → modal d'édition (`task_edit_dialog.py`)
 - **Bouton « Suppr. »** → suppression définitive (fichier GED conservé)
 - **Sync Calendar** → création événement manuelle (§10)
 
-### 5.8 Rafraîchissement
+### 5.10 Rafraîchissement
 
 - Recalcul colonne « Urgent » à chaque chargement et toutes les **60 s** (timer NiceGUI)
 - Rafraîchissement à chaque changement d'onglet (`tab_registry.py`)
-- Rafraîchissement Kanban à chaque événement de la file d'analyse
+- Rafraîchissement Kanban à chaque événement de la file d'analyse, création manuelle ou archivage récurrent
 
 ---
 
@@ -512,7 +563,16 @@ Service : `app/services/autopilot_service.py`
 
 Toggle dans **Paramètres** : « Autopilote (validation automatique) » — **ON par défaut**.
 
-### 8.2 Relances anti-oubli (macOS)
+### 8.2 Routines récurrentes
+
+Service : `create_manual_task()` + `archive_task()` dans `task_service.py` · calcul dates : `app/utils/recurrence.py`
+
+| Événement | Action |
+|-----------|--------|
+| Clic « Créer la tâche » | Insertion tâche manuelle sans `document_id` ; `deadline` = date de départ |
+| Clic « Fait » + `recurrence_pattern` | Archivage + insertion prochaine occurrence avec `parent_task_id` = racine |
+
+### 8.3 Relances anti-oubli (macOS)
 
 | Déclencheur | Condition | Action |
 |-------------|-----------|--------|
@@ -531,7 +591,7 @@ Implémentation V1 :
 
 **V1.1** : daemon `launchd` pour notifications même app fermée.
 
-### 8.3 Google Calendar Sync
+### 8.4 Google Calendar Sync
 
 Voir §10.
 
@@ -622,7 +682,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── .env.example
 ├── .gitignore
 ├── main.py                      # entrypoint NiceGUI — Dashboard onglet défaut
-├── start.command                # double-clic Bureau
+├── start.command                # double-clic Bureau (purge __pycache__ + python -B)
 ├── app/
 │   ├── config.py                # constantes (ROOT_PATH fixe)
 │   ├── db/
@@ -646,9 +706,10 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── notification_scheduler.py
 │   │   └── calendar_service.py
 │   ├── ui/
-│   │   ├── dashboard_view.py    # page d'accueil unifiée
+│   │   ├── dashboard_view.py    # page d'accueil — expansion + Kanban
 │   │   ├── inbox_view.py        # validation manuelle split-view
-│   │   ├── document_upload.py   # dépôt + collage partagés
+│   │   ├── document_upload.py   # dépôt + collage (2 ou 3 colonnes)
+│   │   ├── manual_task_form.py  # création manuelle / routines
 │   │   ├── inbox_ui_safe.py     # garde-fous client NiceGUI
 │   │   ├── ged_view.py
 │   │   ├── settings_view.py
@@ -660,12 +721,13 @@ IA_Personal_Secretaire/          # dépôt git
 │       ├── tags.py
 │       ├── slugify.py
 │       ├── file_preview.py
+│       ├── recurrence.py        # patterns daily/weekly/monthly
 │       ├── suggestion_infer.py
 │       └── analysis_logging.py
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/                       # 45+ tests unitaires
+└── tests/                       # 55+ tests unitaires
 ```
 
 ---
@@ -695,6 +757,9 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] **Interface unifiée** : dépôt + statut + Kanban sur une page
 - [x] Dashboard = page d'accueil par défaut
 - [x] Mode **Autopilote** + bannière validation manuelle
+- [x] **3 colonnes** : collage, dépôt, création manuelle / routines
+- [x] **Panneau escamotable** (`ui.expansion`) pour la zone haute
+- [x] Récurrence quotidienne / hebdomadaire / mensuelle à l'archivage
 
 ### Phase 3 — GED / Archives ✅
 - [x] Recherche full-text (incl. raw_summary)
@@ -708,6 +773,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Settings UI (Autopilote, sync Calendar, notifications)
 - [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
 - [x] Suggestions IA (`suggestion`, `justification_proof`)
+- [x] Tâches manuelles + colonnes récurrence SQLite
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -744,6 +810,9 @@ IA_Personal_Secretaire/          # dépôt git
 | **HEIC** | **Oui V1** via `pillow-heif` |
 | **Backup zip** | Plus tard (Time Machine suffit) |
 | **Preview Dashboard** | **Non** — écran épuré ; preview réservée à l'Inbox |
+| **Zone dépôt Dashboard** | **Panneau `ui.expansion`** repliable — 3 colonnes à l'intérieur |
+| **Tâches manuelles** | **Oui** — sans document GED, depuis colonne 3 du Dashboard |
+| **Routines récurrentes** | **Oui** — daily / weekly / monthly ; prochaine occurrence à l'archivage |
 
 ---
 
@@ -766,6 +835,8 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Dépôt + collage depuis le Dashboard sans passer par l'Inbox.
 - [x] Spinner et rafraîchissement Kanban post-analyse.
 - [x] Autopilote + bannière validation manuelle.
+- [x] Création manuelle + routines récurrentes depuis le Dashboard.
+- [x] Panneau escamotable « Dépôt de documents & Statut ».
 
 ### V1 complète (Phase 4–5) ✅ / 🔄
 
@@ -812,4 +883,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec interface Dashboard-first, Autopilote, multi-tâches et file d'analyse asynchrone. Prochaine étape recommandée : finaliser le README et préparer V1.1 (notifications hors app).
+**État actuel** : V1 fonctionnelle avec Dashboard escamotable, création manuelle, routines récurrentes, Autopilote et file d'analyse asynchrone. Prochaine étape recommandée : finaliser le README et préparer V1.1 (notifications hors app).

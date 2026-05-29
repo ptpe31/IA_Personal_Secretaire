@@ -6,6 +6,7 @@ import re
 
 from app.models.analysis import DocumentAnalysisResult, TaskAnalysisItem
 from app.utils.date_extraction import extract_french_event_dates
+from app.utils.suggestion_infer import infer_rehearsal_suggestion, infer_spectacle_suggestion
 
 
 def expand_analysis_tasks(result: DocumentAnalysisResult) -> DocumentAnalysisResult:
@@ -30,8 +31,6 @@ def expand_analysis_tasks(result: DocumentAnalysisResult) -> DocumentAnalysisRes
     if len(events) <= 1:
         return result
 
-    blob_lower = blob.lower()
-    is_hiphop = any(k in blob_lower for k in ("hip", "hip-hop", "hip hop", "danse"))
     rehearsal_dates = [event for event in events if "spectacle" not in event[1].lower()]
     spectacle_dates = [event for event in events if "spectacle" in event[1].lower()]
     if not spectacle_dates:
@@ -51,15 +50,10 @@ def expand_analysis_tasks(result: DocumentAnalysisResult) -> DocumentAnalysisRes
     rep_total = len(rehearsal_dates)
     rehearsal_suggestion = task.suggestion or infer_rehearsal_suggestion(blob)
     spectacle_suggestion = infer_spectacle_suggestion(blob) or task.suggestion
+    base_title = re.sub(r"\s*\(\d+/\d+\)\s*", " ", task.title).strip() or task.title
 
     for index, (event_date, snippet) in enumerate(rehearsal_dates, start=1):
-        if is_hiphop and rep_total > 1:
-            title = f"Répétition Hip-Hop {index}/{rep_total}"
-        elif rep_total > 1:
-            title = f"{task.title} ({index}/{rep_total})"
-        else:
-            title = task.title
-
+        title = f"{base_title} ({index}/{rep_total})" if rep_total > 1 else base_title
         expanded.append(
             task.model_copy(
                 update={
@@ -73,11 +67,7 @@ def expand_analysis_tasks(result: DocumentAnalysisResult) -> DocumentAnalysisRes
         )
 
     for event_date, snippet in spectacle_dates:
-        title = (
-            "Spectacle de fin d'année Hip-Hop"
-            if is_hiphop
-            else re.sub(r"\s*\(\d+/\d+\)\s*", " ", task.title).strip() or task.title
-        )
+        title = base_title if "spectacle" in base_title.lower() else f"{base_title} — événement"
         expanded.append(
             task.model_copy(
                 update={
@@ -95,5 +85,3 @@ def expand_analysis_tasks(result: DocumentAnalysisResult) -> DocumentAnalysisRes
         return result
 
     return result.model_copy(update={"tasks": expanded})
-
-from app.utils.suggestion_infer import infer_rehearsal_suggestion, infer_spectacle_suggestion

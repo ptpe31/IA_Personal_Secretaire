@@ -12,7 +12,6 @@ from app.services.inbox_queue import JobStatus, get_inbox_queue
 from app.services.task_service import (
     archive_task,
     delete_task,
-    list_all_tags,
     list_tasks,
     refresh_task_statuses,
 )
@@ -37,7 +36,7 @@ CATEGORY_OPTIONS = {
 def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     """Construit la page d'accueil : dépôt en haut, Kanban en bas."""
     queue = get_inbox_queue()
-    state = {"category": "all", "tags": set()}
+    state = {"category": "all"}
 
     ui.label("Tableau de bord").classes("text-h5 q-mb-sm")
     ui.label(
@@ -46,23 +45,28 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
     refresh_hooks: dict[str, Callable[[], None]] = {"kanban": lambda: None}
 
-    with ui.card().classes("w-full q-mb-md q-pa-md"):
-        ui.label("Dépôt de documents & Statut").classes("text-subtitle1 q-mb-sm")
-        create_document_intake(
-            triple_column=True,
-            compact=True,
-            third_column=lambda: create_manual_task_form(
-                on_created=lambda: refresh_hooks["kanban"](),
-            ),
-        )
-        status_container = ui.column().classes("w-full")
+    with ui.expansion(
+        "Dépôt de documents & Statut",
+        icon="cloud_upload",
+        value=True,
+    ).classes("w-full q-mb-md").props(
+        'header-class="text-weight-bold text-subtitle1 bg-grey-2 q-px-sm rounded-borders"'
+    ).style("border: 1px solid rgba(0,0,0,0.08); border-radius: 4px;") as deposit_expansion:
+        with ui.column().classes("w-full q-pa-md q-gutter-sm"):
+            create_document_intake(
+                triple_column=True,
+                compact=True,
+                third_column=lambda: create_manual_task_form(
+                    on_created=lambda: refresh_hooks["kanban"](),
+                ),
+            )
+            status_container = ui.column().classes("w-full")
 
-    manual_banner_container = ui.column().classes("w-full q-mb-md")
+    manual_banner_container = ui.column().classes("w-full q-mb-sm")
 
     ui.separator().classes("q-my-md")
 
     filter_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-md")
-    tag_chip_container = ui.row().classes("w-full q-gutter-xs q-mb-md flex-wrap")
     board_container = ui.row().classes("w-full q-col-gutter-md items-start")
 
     @ui.refreshable
@@ -108,32 +112,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         "Cliquez ici pour aller à l'Inbox",
                         on_click=go_inbox,
                     ).props("flat dense color=primary no-caps")
-
-    @ui.refreshable
-    def render_tag_filters() -> None:
-        tag_chip_container.clear()
-        all_tags = list_all_tags()
-        with tag_chip_container:
-            if not all_tags:
-                ui.label("Aucun tag — déposez un document ci-dessus.").classes(
-                    "text-caption text-grey-6"
-                )
-                return
-            for tag in all_tags:
-                selected = tag.lower() in state["tags"]
-
-                def toggle(t: str = tag) -> None:
-                    key = t.lower()
-                    if key in state["tags"]:
-                        state["tags"].remove(key)
-                    else:
-                        state["tags"].add(key)
-                    render_tag_filters.refresh()
-                    render_board.refresh()
-
-                ui.button(f"#{tag}", on_click=toggle).props(
-                    "dense rounded" + (" color=primary" if selected else " outline")
-                )
 
     @ui.refreshable
     def render_category_filters() -> None:
@@ -208,11 +186,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                     "text-caption text-amber-10 italic q-mt-xs"
                 ).style("color: #b45309;")
 
-            if task.tags:
-                ui.label("• Tags : " + " ".join(f"#{t}" for t in task.tags)).classes(
-                    "text-caption text-grey-8"
-                )
-
             with ui.row().classes("items-center q-gutter-xs q-mt-xs w-full flex-wrap"):
                 if column == "archived":
 
@@ -238,7 +211,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                             else:
                                 ui.notify("Tâche archivée.", type="positive")
                             render_board.refresh()
-                            render_tag_filters.refresh()
 
                     ui.checkbox("Fait", on_change=mark_done)
 
@@ -265,11 +237,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     @ui.refreshable
     def render_board() -> None:
         refresh_task_statuses()
-        tag_filter_list = list(state["tags"]) if state["tags"] else None
-        tasks = list_tasks(
-            category_filter=state["category"],
-            tag_filters=tag_filter_list,
-        )
+        tasks = list_tasks(category_filter=state["category"])
 
         buckets: dict[str, list[TaskDTO]] = {
             "urgent": [],
@@ -324,7 +292,6 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         render_processing_status.refresh()
         render_manual_banner.refresh()
         render_category_filters.refresh()
-        render_tag_filters.refresh()
         render_board.refresh()
 
     def _detach_queue_listener() -> None:
@@ -332,6 +299,8 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
     def on_queue_changed() -> None:
         def _refresh_from_queue() -> None:
+            if queue.active_processing_job():
+                deposit_expansion.value = True
             render_processing_status.refresh()
             render_manual_banner.refresh()
             render_board.refresh()
@@ -351,15 +320,11 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     except RuntimeError:
         logger.debug("Impossible d'enregistrer on_disconnect sur le Dashboard.")
 
-    refresh_hooks["kanban"] = lambda: (
-        render_board.refresh(),
-        render_tag_filters.refresh(),
-    )
+    refresh_hooks["kanban"] = render_board.refresh
 
     render_processing_status()
     render_manual_banner()
     render_category_filters()
-    render_tag_filters()
     render_board()
 
     register_tab_refresh("dashboard", refresh_dashboard)
