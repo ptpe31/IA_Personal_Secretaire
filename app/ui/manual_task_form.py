@@ -18,7 +18,7 @@ def create_manual_task_form(*, on_created: Callable[[], None]) -> None:
 
         title_input = ui.input(
             "Titre / Action",
-            placeholder="Envoyer la compta",
+            placeholder="Titre de la tâche",
         ).props("dense outlined").classes("w-full")
 
         ui.label("Catégorie").classes("text-caption text-grey-7 q-mt-xs")

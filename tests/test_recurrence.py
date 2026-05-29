@@ -26,25 +26,25 @@ def test_compute_next_occurrence_monthly_end_of_month():
 
 def test_create_manual_task_without_recurrence():
     task_id = create_manual_task(
-        title="Envoyer la compta",
+        title="Tâche manuelle test",
         category="pro",
         start_date=date(2026, 6, 15),
-        suggestion="Utiliser le portail en ligne",
+        suggestion="Note optionnelle",
     )
     task = get_task_by_id(task_id)
     assert task is not None
-    assert task.title == "Envoyer la compta"
+    assert task.title == "Tâche manuelle test"
     assert task.category == "pro"
     assert task.deadline == date(2026, 6, 15)
     assert task.recurrence_pattern is None
     assert task.parent_task_id is None
-    assert task.suggestion == "Utiliser le portail en ligne"
+    assert task.suggestion == "Note optionnelle"
     assert task.document_id is None
 
 
 def test_create_manual_task_with_monthly_recurrence():
     task_id = create_manual_task(
-        title="Payer le loyer",
+        title="Tâche récurrente mensuelle",
         category="perso",
         start_date=date(2026, 6, 1),
         recurrence_pattern="monthly",
@@ -56,7 +56,7 @@ def test_create_manual_task_with_monthly_recurrence():
 
 def test_archive_spawns_next_monthly_occurrence():
     task_id = create_manual_task(
-        title="Routine mensuelle",
+        title="Occurrence mensuelle",
         category="pro",
         start_date=date(2026, 6, 10),
         recurrence_pattern="monthly",
@@ -72,7 +72,7 @@ def test_archive_spawns_next_monthly_occurrence():
 
     next_task = get_task_by_id(spawned_id)
     assert next_task is not None
-    assert next_task.title == "Routine mensuelle"
+    assert next_task.title == "Occurrence mensuelle"
     assert next_task.category == "pro"
     assert next_task.deadline == date(2026, 7, 10)
     assert next_task.recurrence_pattern == "monthly"
@@ -92,7 +92,7 @@ def test_archive_non_recurring_returns_none():
 
 def test_recurrence_chain_preserves_root_parent():
     root_id = create_manual_task(
-        title="Routine hebdo",
+        title="Occurrence hebdomadaire",
         category="pro",
         start_date=date(2026, 6, 1),
         recurrence_pattern="weekly",

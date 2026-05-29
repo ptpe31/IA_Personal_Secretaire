@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.4-implemented  
+> **Version** : 0.5-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — panneau escamotable, routines récurrentes  
+> **Statut** : V1 fonctionnelle — analyse Gemini, fallback Ollama, purge SQLite  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -17,7 +17,7 @@
 6. [Vue secondaire — Inbox (validation manuelle)](#6-vue-secondaire--inbox-validation-manuelle)
 7. [Vue 3 — GED / Archives](#7-vue-3--ged--archives)
 8. [Automatisations](#8-automatisations)
-9. [Intégration Ollama (IA locale)](#9-intégration-ollama-ia-locale)
+9. [Intégration IA — Gemini, Ollama & mock](#9-intégration-ia--gemini-ollama--mock)
 10. [Intégration Google Calendar](#10-intégration-google-calendar)
 11. [Arborescence projet](#11-arborescence-projet)
 12. [Plan d'implémentation itérative](#12-plan-dimplémentation-itérative)
@@ -38,10 +38,10 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 
 | Principe | Description |
 |----------|-------------|
-| **Local-first** | Données, fichiers et analyse IA restent sur la machine. Aucun envoi de documents vers un cloud pour l'analyse. |
-| **Souveraineté** | SQLite + filesystem local ; pas de compte obligatoire. |
+| **Local-first (données)** | SQLite + filesystem local sous `~/Trankil-v2` ; pas de compte obligatoire. |
+| **Analyse documentaire** | **Gemini API** si clé configurée (multimodal cloud) ; sinon **Ollama** local ; sinon **mock** démo. |
 | **Mac natif** | Notifications macOS, chemin fixe `~/Trankil-v2`. |
-| **Itératif** | MVP testable sans Ollama (mode mock), puis enrichissement progressif. |
+| **Itératif** | MVP testable sans IA (mode mock), enrichissement progressif. |
 | **Français V1** | Interface en français uniquement ; pas d'i18n en V1. |
 
 ### 1.3 Persona & workflow quotidien (référence UX)
@@ -51,7 +51,8 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 ```
 [Courrier PDF] ──► Scanner ──┐
 [Photo iPhone] ──► HEIC ────┤
-[Mail capture] ──► PNG ─────┤──► Dashboard (dépôt) ──► Analyse Ollama ──► Kanban + GED
+[Mail capture] ──► PNG ─────┤──► Dashboard (dépôt) ──► Analyse IA ──► Kanban + GED
+                             │         (Gemini → Ollama → mock)
                              │                              │
                              │                              └─► (Autopilote OFF ou erreur)
                              │                                       └─► Inbox (validation manuelle)
@@ -61,7 +62,7 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 | Mode | Comportement |
 |------|--------------|
 | **Autopilote ON** (défaut) | Document analysé → tâches créées automatiquement → fichier archivé en GED → l'utilisateur reste sur le Dashboard. |
-| **Autopilote OFF** ou **erreur Ollama** | Document mis en file Inbox → bannière cliquable sur le Dashboard : « N document(s) nécessite(nt) votre validation manuelle ». |
+| **Autopilote OFF** ou **erreur analyse IA** | Document mis en file Inbox → bannière cliquable sur le Dashboard : « N document(s) nécessite(nt) votre validation manuelle ». |
 
 ---
 
@@ -76,7 +77,8 @@ Le dépôt de développement s'appelle `IA_Personal_Secretaire` ; l'application 
 | Backend | Python (logique métier, scripts, intégrations) |
 | UI | **NiceGUI** (FastAPI + Vue/Quasar) — **validé** |
 | Base de données | **SQLite 3** |
-| IA locale | **Ollama** — modèle vision : `llama3.2-vision` |
+| IA documentaire (prioritaire) | **Google Gemini** — `gemini-1.5-flash` (configurable) via `google-generativeai` |
+| IA documentaire (fallback) | **Ollama** — `llama3.2-vision` (local) |
 | Notifications | `osascript` / AppleScript ou lib Python (`pync`, `desktop-notifier`) |
 | Prérequis système | **Poppler** via Homebrew (`brew install poppler`) pour conversion PDF |
 
@@ -95,7 +97,8 @@ Streamlit a été écarté : excellent pour la data science, mais inadapté au s
 
 ```
 nicegui>=2.0
-httpx                    # client Ollama
+httpx                    # client Ollama (fallback)
+google-generativeai      # client Gemini (analyse prioritaire)
 pydantic>=2.0            # validation JSON IA
 python-dateutil          # parsing dates
 google-api-python-client # Calendar (phase 4)
@@ -105,6 +108,15 @@ pillow-heif              # support HEIC (photos iPhone)
 pdf2image                # PDF → image (requiert Poppler)
 pypdf                    # métadonnées PDF (optionnel)
 ```
+
+**Configuration Gemini** : fichier `.env` à la racine du dépôt (voir `.env.example`) :
+
+```env
+GEMINI_API_KEY=votre_cle_api_google
+# GEMINI_MODEL=gemini-1.5-pro   # optionnel
+```
+
+La clé peut aussi être stockée dans `settings` (`gemini_api_key`). Priorité : variable d'environnement → table SQLite.
 
 ### 2.4 Lancement
 
@@ -130,13 +142,14 @@ Le script `start.command` active le venv, purge les `__pycache__`, libère le po
 ┌────────────────────────────▼────────────────────────────────────┐
 │                      Application Layer (Python)                  │
 │  TaskService │ GEDService │ InboxQueueService │ AutopilotService │
-│  OllamaClient ( + MockOllamaClient ) │ NotificationService       │
+│  GeminiClient │ OllamaClient │ MockOllamaClient │ NotificationService │
+│  analysis_client.get_analysis_client() │ db_maintenance          │
 │  CalendarSyncService (opt-in, OFF par défaut)                    │
 └──────┬──────────────────┬──────────────────┬────────────────────┘
        │                  │                  │
        ▼                  ▼                  ▼
-  SQLite            ~/Trankil-v2/      Ollama :11434
-  database.sqlite   Pro|Perso/GED/     llama3.2-vision
+  SQLite            ~/Trankil-v2/      Gemini API (si clé)
+  database.sqlite   Pro|Perso/GED/     ou Ollama :11434
                     .inbox/ (file temp.)
 ```
 
@@ -145,7 +158,7 @@ Le script `start.command` active le venv, purge les `__pycache__`, libère le po
 | Composant | Rôle |
 |-----------|------|
 | **Main app** (`main.py`) | Point d'entrée NiceGUI ; Dashboard = onglet par défaut ; navigation entre vues |
-| **InboxQueueService** | File FIFO asynchrone : upload → analyse Ollama en arrière-plan → Autopilote ou file manuelle |
+| **InboxQueueService** | File FIFO asynchrone : upload → analyse IA en arrière-plan → Autopilote ou file manuelle |
 | **Background scheduler** | Thread daemon : vérifie deadlines, envoie notifications J-3 / J-1 (**app ouverte uniquement en V1**) |
 | **Services** | Couche métier découplée de l'UI (testable unitairement) |
 
@@ -208,7 +221,7 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | Colonne | Type | Description |
 |---------|------|-------------|
 | `id` | INTEGER PK | |
-| `name` | TEXT UNIQUE NOT NULL | Ex: `Tech`, `Expo` (sans `#`) |
+| `name` | TEXT UNIQUE NOT NULL | Ex: `formation`, `facture` (sans `#`) |
 | `created_at` | DATETIME | |
 
 #### Table `task_tags` (N-N)
@@ -239,8 +252,10 @@ Clés settings :
 
 | Clé | Défaut | Description |
 |-----|--------|-------------|
-| `ollama_model` | `"llama3.2-vision"` | Modèle vision Ollama |
-| `ollama_base_url` | `"http://localhost:11434"` | URL Ollama |
+| `ollama_model` | `"llama3.2-vision"` | Modèle vision Ollama (fallback) |
+| `ollama_base_url` | `"http://localhost:11434"` | URL Ollama (fallback) |
+| `gemini_model` | `"gemini-1.5-flash"` | Modèle Gemini (`gemini-1.5-pro` possible) |
+| `gemini_api_key` | `""` | Clé API Gemini (alternative au `.env`) |
 | `autopilot_enabled` | `"true"` | Validation automatique post-analyse |
 | `google_calendar_auto_sync` | `"false"` | Sync Calendar à la validation (**OFF par défaut**) |
 | `notification_enabled` | `"true"` | Relances J-3 / J-1 |
@@ -291,7 +306,7 @@ La page est divisée en **deux sections verticales** :
 │  ┌──────────────┬──────────────┬──────────────────────────┐ │
 │  │ Coller ⌘V    │ Glisser-dép. │ Création manuelle/Routine│ │
 │  └──────────────┴──────────────┴──────────────────────────┘ │
-│  [spinner + barre progression + message d'état Ollama]       │
+│  [spinner NiceGUI + message d'état IA]                       │
 ├─────────────────────────────────────────────────────────────┤
 │  [bannière validation manuelle Inbox — toujours visible]     │
 ├─────────────────────────────────────────────────────────────┤
@@ -317,7 +332,7 @@ La zone haute est un **accordéon NiceGUI** (`ui.expansion`) pour maximiser l'es
 | Style en-tête | Texte gras, fond gris clair (`bg-grey-2`), bordure discrète |
 | Comportement | Clic sur l'en-tête → repli/dépli animé (Quasar) |
 
-**Auto-dépliage** : si un fichier est en cours d'analyse Ollama, le panneau se rouvre automatiquement pour afficher le spinner.
+**Auto-dépliage** : si un fichier est en cours d'analyse IA, le panneau se rouvre automatiquement pour afficher le spinner.
 
 La **bannière validation manuelle Inbox** (§5.5) reste **hors** du panneau, visible même replié.
 
@@ -341,7 +356,7 @@ Formulaire « Création manuelle / Routine » (`manual_task_form.py`) :
 
 | Champ | Widget | Description |
 |-------|--------|-------------|
-| Titre / Action | `ui.input` | Obligatoire (ex. « Envoyer la compta ») |
+| Titre / Action | `ui.input` | Obligatoire — placeholder neutre « Titre de la tâche » |
 | Catégorie | `ui.radio` | Pro / Perso |
 | Date de départ | `ui.input type=date` | Première échéance → `deadline` |
 | Récurrence | `ui.select` | Aucune, Quotidien, Hebdomadaire, Mensuel |
@@ -364,9 +379,9 @@ Migration SQLite : colonnes `recurrence_pattern` et `parent_task_id` ajoutées v
 
 ### 5.5 Indicateur « En cours de traitement »
 
-Pendant l'analyse Ollama (file FIFO), **à l'intérieur du panneau déplié** :
+Pendant l'analyse IA (file FIFO), **à l'intérieur du panneau déplié** :
 
-- **Spinner** NiceGUI (`ui.spinner`) + **barre de progression** linéaire indéterminée
+- **Spinner** NiceGUI (`ui.spinner` — dots + line, taille `lg`)
 - Texte d'état :
   - En attente : `En attente — [Nom_du_fichier]`
   - En cours : `⚙️ Analyse de [Nom_du_fichier] par la secrétaire IA en cours...`
@@ -406,11 +421,11 @@ Le bouton bascule l'onglet Inbox via `tabs.value = inbox_tab`.
 ### 5.9 Carte tâche
 
 ```
-[Pro] Mettre à jour Expo                    [🔁 Mensuel]
+[Pro] Séance de formation (1/3)              [🔁 Mensuel]
 • Reçu le : 28/05/2026
-• Deadline : 26/06/2026
-💡 Faire l'inscription par mail ou au 05.62.11.62.66
-• Tags : #Tech #Expo #Maintenance
+• Deadline : 05/11/2026
+💡 Horaires : 14h à 16h
+• Tags : #formation #organisme
 ☐ Fait    [Modifier]    [Suppr.]    [📅 Sync Calendar]
 ```
 
@@ -452,29 +467,29 @@ Interactions :
 {
   "tasks": [
     {
-      "title": "Inscription spectacle Hip-Hop",
+      "title": "Séance de formation (1/3)",
       "date_emission": "2026-05-28",
-      "date_event": "2026-06-15",
-      "deadline": "2026-06-10",
+      "date_event": "2026-11-05",
+      "deadline": "2026-11-05",
       "category": "pro",
-      "tags": ["Spectacle", "Hip-Hop"],
-      "justification_proof": "« Inscriptions avant le 10 juin »",
-      "suggestion": "Faire l'inscription par mail ou au 05.62.11.62.66",
+      "tags": ["formation"],
+      "justification_proof": "« Séances de formation obligatoires les 5, 12 et 19 novembre »",
+      "suggestion": "Horaires : 14h à 16h",
       "confidence": 0.85
     },
     {
-      "title": "Répétition atelier",
+      "title": "Conférence de clôture formation",
       "date_emission": "2026-05-28",
-      "date_event": "2026-06-12",
-      "deadline": null,
+      "date_event": "2026-11-22",
+      "deadline": "2026-11-22",
       "category": "pro",
-      "tags": ["Répétition"],
-      "justification_proof": "« Atelier le 12 juin de 18h à 19h »",
-      "suggestion": "Horaires de l'atelier : 18h à 19h",
+      "tags": ["formation"],
+      "justification_proof": "« Conférence de clôture le samedi 22 novembre »",
+      "suggestion": "Réservation par mail ou au 01.02.03.04.05",
       "confidence": 0.80
     }
   ],
-  "document_summary": "Flyer association avec deux événements distincts.",
+  "document_summary": "Mail organisme avec plusieurs dates de formation.",
   "confidence": 0.82
 }
 ```
@@ -495,12 +510,12 @@ Format mono-tâche (legacy) normalisé automatiquement par `normalize_analysis_p
 
 Post-traitement : `task_expansion.py` (ancrage temporel relatif), inférence suggestion de secours (`suggestion_infer.py`).
 
-### 6.4 Mode mock (sans Ollama)
+### 6.4 Mode mock (sans IA configurée)
 
-Si Ollama indisponible ou modèle `llama3.2-vision` absent :
-- **Mock uniquement** — pas de modèle de secours.
-- Retourne un JSON multi-tâches de démo.
-- Bandeau UI : « Mode démo — Ollama non disponible ».
+Si ni Gemini (clé absente) ni Ollama (modèle absent / injoignable) :
+- **Mock uniquement** — pas d'autre modèle de secours.
+- Retourne une tâche générique dérivée du nom de fichier.
+- Bandeau UI Inbox : « Mode démo — Ollama non disponible » (si client mock actif).
 
 ### 6.5 Champs formulaire (UI Inbox)
 
@@ -528,7 +543,7 @@ Possibilité d'**exclure** des fiches avant validation (indices exclus dans le j
 ```
 
 Exemples :
-- `2026-05-28_Maintenance_Expo_SDK.png`
+- `2026-05-28_Mail_Formation.png`
 - `2026-05-15_Courrier_URSSAF_Cotisations.pdf`
 
 **Slug** : titre sanitizé (ASCII, underscores, max 60 caractères).
@@ -555,7 +570,7 @@ Service : `app/services/autopilot_service.py`
 
 | Étape | Action |
 |-------|--------|
-| 1 | Analyse Ollama terminée (`JobStatus.READY`) |
+| 1 | Analyse IA terminée (`JobStatus.READY`) |
 | 2 | Si `autopilot_enabled == "true"` → `auto_validate_job()` |
 | 3 | Crée N tâches + archive GED + sync Calendar si auto activée |
 | 4 | Supprime le job de la file ; notifie ; rafraîchit Dashboard |
@@ -581,7 +596,7 @@ Service : `create_manual_task()` + `archive_task()` dans `task_service.py` · ca
 
 Message type :
 ```
-⚠️ Trankil-v2 : Il te reste 3 jours pour « Mettre à jour Expo ».
+⚠️ Trankil-v2 : Il te reste 3 jours pour « [Titre de la tâche] ».
 ```
 
 Implémentation V1 :
@@ -597,9 +612,41 @@ Voir §10.
 
 ---
 
-## 9. Intégration Ollama (IA locale)
+## 9. Intégration IA — Gemini, Ollama & mock
 
-### 9.1 Configuration
+### 9.1 Factory client (`get_analysis_client`)
+
+Ordre de priorité (`app/services/analysis_client.py`) :
+
+| Priorité | Client | Condition |
+|----------|--------|-----------|
+| 1 | **GeminiClient** | `GEMINI_API_KEY` présente (`.env` ou `settings`) |
+| 2 | **OllamaClient** | Ollama joignable + modèle `llama3.2-vision` installé |
+| 3 | **MockOllamaClient** | Aucune IA disponible |
+
+Modules partagés :
+- `analysis_prompt.py` — prompt système + few-shot formation multi-tâches (ancrage 2026)
+- `analysis_pipeline.py` — sanitization JSON, validation Pydantic, expansion dates, logs
+
+### 9.2 Configuration Gemini
+
+```yaml
+gemini:
+  api_key: ${GEMINI_API_KEY}   # .env ou settings.gemini_api_key
+  model: gemini-1.5-flash      # ou gemini-1.5-pro via settings / env
+```
+
+SDK : `google-generativeai` · JSON strict : `response_mime_type=application/json` + schéma Pydantic `DocumentAnalysisResult` (sanitisé via `gemini_response_schema()` — retrait de `minItems`, etc., incompatibles avec le proto Gemini).
+
+### 9.3 Flux d'analyse Gemini
+
+1. Charger clé API (`config.get_gemini_api_key()`).
+2. Préparer l'image : PDF → page 1 PNG, HEIC → PNG (`load_image_bytes_for_vision`).
+3. Appel multimodal : prompt utilisateur + bytes image (PNG/JPEG/WebP).
+4. Prompt système : `build_system_prompt()` (few-shot séances de formation).
+5. Parser JSON → `finalize_document_analysis()` (expansion, normalisation tags).
+
+### 9.4 Configuration Ollama (fallback local)
 
 ```yaml
 ollama:
@@ -608,17 +655,9 @@ ollama:
   timeout_seconds: 120
 ```
 
-### 9.2 Flux d'analyse
+Flux : image base64 → API `/api/chat` avec `format: json` · même prompt et pipeline post-traitement que Gemini.
 
-1. Vérifier disponibilité : `GET /api/tags` + présence de `llama3.2-vision`.
-2. Préparer l'image : fichier natif, HEIC → PNG, PDF → **page 1** via `pdf2image` + Poppler.
-3. Encoder image en base64 pour l'API Ollama vision.
-4. Prompt système structuré demandant **JSON strict multi-tâches** (voir §6.2).
-5. Parser réponse avec `pydantic` ; retry 1× si JSON invalide.
-6. Post-traitement : expansion dates relatives, normalisation tags.
-7. Si échec ou modèle absent → **MockOllamaClient** (pas d'autre modèle).
-
-### 9.3 Prompt système (résumé)
+### 9.5 Prompt système (résumé)
 
 ```
 Tu es un assistant secrétaire pour un entrepreneur français.
@@ -630,13 +669,13 @@ Réponds UNIQUEMENT en JSON valide avec :
 Dates : YYYY-MM-DD. deadline = date officielle du document, sans marge.
 ```
 
-Prompt few-shot avec exemples Hip-Hop dans `ollama_client.py`.
+Few-shot complet (4 tâches « séances de formation ») dans `analysis_prompt.py`.
 
-### 9.4 PDF — Page 1 uniquement (V1)
+### 9.6 PDF — Page 1 uniquement (V1)
 
-Conversion page 1 en image (`pdf2image` + **Poppler**) puis envoi à Ollama vision.
+Conversion page 1 en image (`pdf2image` + **Poppler**) puis envoi au modèle vision.
 
-### 9.5 HEIC — Photos iPhone (V1)
+### 9.7 HEIC — Photos iPhone (V1)
 
 Support natif via **`pillow-heif`** : conversion transparente HEIC → preview + analyse vision.
 
@@ -656,9 +695,9 @@ Support natif via **`pillow-heif`** : conversion transparente HEIC → preview +
 
 | Champ Google | Valeur |
 |--------------|--------|
-| Titre | `[PRO] Mettre à jour Expo (Limite: 26 Juin)` |
+| Titre | `[PRO] Titre tâche (Limite: 26 Juin)` |
 | Date | `deadline` en all-day event |
-| Description | `Document reçu le 28/05/2026. Tags: #Tech, #Expo.` |
+| Description | `Document reçu le 28/05/2026. Tags: #tag1, #tag2.` |
 
 ### 10.3 UX
 
@@ -666,7 +705,20 @@ Support natif via **`pillow-heif`** : conversion transparente HEIC → preview +
 - Switch global **Paramètres** : sync auto à la validation (désactivé par défaut)
 - Sync auto également déclenchée par l'Autopilote si l'option est activée
 
-### 10.4 Hors-ligne
+### 10.4 Paramètres — maintenance données
+
+Section **« Données locales »** (`settings_view.py`) :
+
+| Élément | Description |
+|---------|-------------|
+| Compteur | Tâches, documents, tags, notifications en base |
+| Bouton **Vider la base SQLite** | Supprime données métier ; **conserve** `settings` (Autopilote, clés, Calendar) |
+| Effet | Vide aussi la file d'analyse en mémoire ; rafraîchit Dashboard, Inbox, GED |
+| Hors périmètre | Fichiers GED sur disque et dossier `.inbox` **non** supprimés |
+
+Service : `app/services/db_maintenance.py` (`purge_application_data`, `get_application_data_counts`).
+
+### 10.5 Hors-ligne (Calendar)
 
 - Si pas de credentials : bouton grisé + message de configuration
 
@@ -697,11 +749,16 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── task_service.py      # validate_inbox_tasks (1 doc → N tasks)
 │   │   ├── ged_service.py
 │   │   ├── archive_service.py
-│   │   ├── inbox_queue.py       # file FIFO async Ollama
+│   │   ├── inbox_queue.py       # file FIFO async IA
 │   │   ├── autopilot_service.py # validation automatique
-│   │   ├── task_expansion.py    # ancrage dates relatives
-│   │   ├── ollama_client.py
+│   │   ├── analysis_client.py   # factory Gemini → Ollama → mock
+│   │   ├── analysis_prompt.py     # prompt système partagé
+│   │   ├── analysis_pipeline.py   # post-traitement JSON IA
+│   │   ├── gemini_client.py       # client Google Gemini
+│   │   ├── ollama_client.py       # fallback local
 │   │   ├── mock_ollama_client.py
+│   │   ├── task_expansion.py    # ancrage dates relatives
+│   │   ├── db_maintenance.py    # purge SQLite
 │   │   ├── notification_service.py
 │   │   ├── notification_scheduler.py
 │   │   └── calendar_service.py
@@ -727,7 +784,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/                       # 55+ tests unitaires
+└── tests/                       # 62+ tests unitaires (conftest isolation SQLite)
 ```
 
 ---
@@ -738,7 +795,9 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Initialiser dépôt, `pyproject.toml`, `.gitignore`
 - [x] Créer `~/Trankil-v2` au premier lancement
 - [x] Schéma SQLite + migrations incrémentales
-- [x] `OllamaClient` + `MockOllamaClient`
+- [x] `OllamaClient` + `MockOllamaClient` + **`GeminiClient`**
+- [x] Factory `get_analysis_client()` (Gemini → Ollama → mock)
+- [x] Tests isolés (`tests/conftest.py` — pas de pollution `~/Trankil-v2`)
 - [x] Tests unitaires statut tâche + slug GED
 - [x] `start.command`
 
@@ -746,7 +805,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Drag & drop NiceGUI (PDF, PNG, JPG, HEIC)
 - [x] Collage presse-papiers (⌘V)
 - [x] Preview document (PDF p1, HEIC, images)
-- [x] Analyse Ollama vision multi-tâches (ou mock)
+- [x] Analyse IA multi-tâches (Gemini prioritaire, Ollama ou mock)
 - [x] File d'attente asynchrone (`InboxQueueService`)
 - [x] Validation → GED + N tasks + raw_summary en base
 
@@ -770,7 +829,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Google Calendar OAuth + sync manuelle + option auto
 
 ### Phase 5 — Polish 🔄
-- [x] Settings UI (Autopilote, sync Calendar, notifications)
+- [x] Settings UI (Autopilote, sync Calendar, notifications, **purge SQLite**)
 - [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
 - [x] Suggestions IA (`suggestion`, `justification_proof`)
 - [x] Tâches manuelles + colonnes récurrence SQLite
@@ -801,7 +860,8 @@ IA_Personal_Secretaire/          # dépôt git
 | **PDF** | **Page 1** uniquement V1 |
 | **Poppler** | Prérequis Homebrew, documenté README |
 | **Lancement** | `python main.py` + **`start.command`** sur le Bureau |
-| **Modèle secours** | **Mock uniquement** (pas de llava) |
+| **Modèle IA prioritaire** | **Gemini** (`gemini-1.5-flash`) si `GEMINI_API_KEY` configurée |
+| **Fallback IA** | **Ollama** local → **Mock** démo |
 | **raw_summary** | **Stocké en base**, indexé pour recherche GED |
 | **Suggestion IA** | Champ `suggestion` affiché sur cartes Dashboard (💡) |
 | **Deadline en base** | **Date officielle** du document ; marge = relances J-3/J-1 |
@@ -813,6 +873,7 @@ IA_Personal_Secretaire/          # dépôt git
 | **Zone dépôt Dashboard** | **Panneau `ui.expansion`** repliable — 3 colonnes à l'intérieur |
 | **Tâches manuelles** | **Oui** — sans document GED, depuis colonne 3 du Dashboard |
 | **Routines récurrentes** | **Oui** — daily / weekly / monthly ; prochaine occurrence à l'archivage |
+| **Purge données** | Bouton Paramètres — vide SQLite métier, conserve settings |
 
 ---
 
@@ -820,8 +881,8 @@ IA_Personal_Secretaire/          # dépôt git
 
 ### MVP (Phase 0–1) ✅
 
-- [x] Déposer un PNG/PDF/HEIC → champs pré-remplis (Ollama ou mock).
-- [x] Ollama vision produit un JSON multi-tâches valide.
+- [x] Déposer un PNG/PDF/HEIC → champs pré-remplis (Gemini, Ollama ou mock).
+- [x] Analyse IA produit un JSON multi-tâches valide (Gemini JSON strict + Pydantic).
 - [x] Modifier et valider → fichier dans `Pro/GED/` ou `Perso/GED/` avec bon nommage.
 - [x] `raw_summary` persisté et searchable.
 
@@ -844,6 +905,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Notifications J-3 et J-1 sur Mac (app ouverte).
 - [x] Sync Google Calendar manuelle + option auto (OFF par défaut).
 - [x] Toggle Autopilote dans Paramètres.
+- [x] Purge SQLite depuis Paramètres (données métier uniquement).
 - [ ] README complet : workflow Dashboard-first, Ollama, Poppler, HEIC, Google Calendar, `start.command`.
 
 ---
@@ -873,7 +935,11 @@ python scripts/init_db.py
 python main.py
 # ou double-clic sur start.command
 
-# Vérifier Ollama
+# Configuration Gemini (copier .env.example → .env)
+cp .env.example .env
+# Éditer GEMINI_API_KEY=...
+
+# Vérifier Ollama (fallback optionnel)
 python scripts/check_ollama.py
 ollama pull llama3.2-vision
 
@@ -883,4 +949,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec Dashboard escamotable, création manuelle, routines récurrentes, Autopilote et file d'analyse asynchrone. Prochaine étape recommandée : finaliser le README et préparer V1.1 (notifications hors app).
+**État actuel** : V1 fonctionnelle avec analyse **Gemini** prioritaire, fallback Ollama, Dashboard escamotable, Autopilote, routines récurrentes, purge SQLite et tests isolés. Prochaine étape recommandée : finaliser le README et migrer vers `google.genai` (SDK successor).

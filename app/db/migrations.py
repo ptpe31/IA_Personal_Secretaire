@@ -119,4 +119,10 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true')"
         )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_model', 'gemini-1.5-flash')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_api_key', '')"
+        )
         conn.commit()

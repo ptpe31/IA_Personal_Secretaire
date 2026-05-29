@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config import PRO_GED_PATH, ROOT_PATH
+from app import config
 from app.services.task_service import (
     TaskValidationInput,
     archive_task,
@@ -24,33 +24,33 @@ def sample_inbox_file(tmp_path, monkeypatch):
 
 
 def test_validate_inbox_creates_task_and_moves_file(sample_inbox_file, monkeypatch):
-    inbox_copy = ROOT_PATH / ".inbox" / "test_validate.png"
+    inbox_copy = config.ROOT_PATH / ".inbox" / "test_validate.png"
     inbox_copy.parent.mkdir(parents=True, exist_ok=True)
     inbox_copy.write_bytes(sample_inbox_file.read_bytes())
 
     task_id = validate_inbox_document(
         inbox_copy,
-        title="Mettre à jour Expo",
+        title="Tâche validation test",
         date_emission=date(2026, 5, 28),
         date_event=None,
         deadline=date(2026, 6, 26),
         category="pro",
-        tags=["Tech", "Expo"],
-        raw_summary="Mail maintenance Expo SDK.",
+        tags=["tech", "maintenance"],
+        raw_summary="Résumé document test.",
     )
 
     assert task_id > 0
     assert not inbox_copy.exists()
 
-    ged_file = PRO_GED_PATH / "2026-05-28_Mettre_a_jour_Expo.png"
+    ged_file = config.PRO_GED_PATH / "2026-05-28_Tache_validation_test.png"
     assert ged_file.is_file()
 
     tasks = list_tasks(category_filter="pro")
     match = next((t for t in tasks if t.id == task_id), None)
     assert match is not None
-    assert match.title == "Mettre à jour Expo"
-    assert set(match.tags) == {"tech", "expo"}
-    assert match.raw_summary == "Mail maintenance Expo SDK."
+    assert match.title == "Tâche validation test"
+    assert set(match.tags) == {"tech", "maintenance"}
+    assert match.raw_summary == "Résumé document test."
 
     archive_task(task_id)
     archived = next(t for t in list_tasks() if t.id == task_id)
@@ -58,7 +58,7 @@ def test_validate_inbox_creates_task_and_moves_file(sample_inbox_file, monkeypat
 
 
 def test_validate_inbox_multi_tasks_one_document(sample_inbox_file):
-    inbox_copy = ROOT_PATH / ".inbox" / "test_multi.png"
+    inbox_copy = config.ROOT_PATH / ".inbox" / "test_multi.png"
     inbox_copy.parent.mkdir(parents=True, exist_ok=True)
     inbox_copy.write_bytes(sample_inbox_file.read_bytes())
 
@@ -66,30 +66,30 @@ def test_validate_inbox_multi_tasks_one_document(sample_inbox_file):
         inbox_copy,
         [
             TaskValidationInput(
-                title="Répétition Hip-Hop 1/4",
+                title="Séance formation (1/3)",
                 date_emission=date(2026, 5, 26),
                 date_event=date(2026, 6, 4),
                 deadline=date(2026, 6, 4),
                 category="perso",
-                tags=["danse", "hiphop"],
-                raw_summary="Mail service culturel",
-                justification_proof="le 4 juin de 18h à 19h",
+                tags=["formation"],
+                raw_summary="Mail organisme",
+                justification_proof="le 4 juin de 14h à 16h",
             ),
             TaskValidationInput(
-                title="Spectacle Hip-Hop",
+                title="Conférence de clôture",
                 date_emission=date(2026, 5, 26),
                 date_event=date(2026, 6, 27),
                 deadline=date(2026, 6, 27),
                 category="perso",
-                tags=["spectacle", "danse"],
-                raw_summary="Mail service culturel",
+                tags=["formation"],
+                raw_summary="Mail organisme",
                 justification_proof="samedi 27 juin 2026",
             ),
         ],
-        ged_title="Mail_Culturel_HipHop",
+        ged_title="Mail_Formation",
         ged_category="perso",
         ged_date_emission=date(2026, 5, 26),
-        document_summary="Mail service culturel hip-hop",
+        document_summary="Mail organisme formation",
     )
 
     assert len(task_ids) == 2

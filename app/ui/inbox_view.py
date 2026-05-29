@@ -14,7 +14,7 @@ from app.models.analysis import DocumentAnalysisResult
 from app.services.calendar_service import try_auto_sync_task
 from app.services.inbox_ingest import extension_from_filename
 from app.services.inbox_queue import InboxJob, JobStatus, get_inbox_queue
-from app.services.ollama_client import get_analysis_client
+from app.services.analysis_client import get_analysis_client
 from app.services.task_service import TaskValidationInput, parse_tags_input, validate_inbox_tasks
 from app.ui.document_upload import ACCEPT_MIME, create_paste_zone, wire_clipboard_paste
 from app.ui.inbox_ui_safe import element_client_alive, run_if_client_alive, safe_clear

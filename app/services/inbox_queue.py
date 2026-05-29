@@ -13,7 +13,7 @@ from pathlib import Path
 
 from app.models.analysis import DocumentAnalysisResult
 from app.utils.analysis_logging import log_analysis_result
-from app.services.ollama_client import AnalysisClient, get_analysis_client
+from app.services.analysis_client import AnalysisClient, get_analysis_client
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,18 @@ class InboxQueueService:
         self._jobs.pop(job_id, None)
         if job_id in self._order:
             self._order.remove(job_id)
+        self._notify()
+
+    def clear_all_jobs(self) -> None:
+        """Réinitialise la file d'analyse en mémoire."""
+        self._jobs.clear()
+        self._order.clear()
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except asyncio.QueueEmpty:
+                break
         self._notify()
 
     async def _worker_loop(self) -> None:

@@ -71,6 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 -- Paramètres par défaut (spec §4.1)
 INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_model', 'llama3.2-vision');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_base_url', 'http://localhost:11434');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_model', 'gemini-1.5-flash');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('gemini_api_key', '');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('google_calendar_auto_sync', 'false');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('notification_enabled', 'true');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true');

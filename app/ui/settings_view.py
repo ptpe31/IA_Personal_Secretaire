@@ -115,3 +115,72 @@ def create_settings_view() -> None:
                 type="info",
             ),
         )
+
+    with ui.card().classes("w-full q-mt-md"):
+        ui.label("Données locales").classes("text-subtitle1 q-mb-sm")
+        ui.label(
+            "Supprime toutes les tâches, documents, tags et l'historique de notifications "
+            "de la base SQLite. Les paramètres (Autopilote, clés API, Calendar…) sont "
+            "conservés. Les fichiers déjà classés en GED et le dossier .inbox ne sont pas "
+            "effacés du disque."
+        ).classes("text-caption text-grey-7 q-mb-sm")
+
+        from app.services.db_maintenance import get_application_data_counts, purge_application_data
+        from app.services.inbox_queue import get_inbox_queue
+        from app.ui.tab_registry import refresh_tab
+
+        stats_label = ui.label("").classes("text-body2 q-mb-sm")
+
+        def refresh_stats() -> None:
+            counts = get_application_data_counts()
+            stats_label.text = (
+                f"{counts['tasks']} tâche(s) · {counts['documents']} document(s) · "
+                f"{counts['tags']} tag(s) · {counts['notifications_log']} notification(s)"
+            )
+
+        refresh_stats()
+
+        def confirm_purge() -> None:
+            counts = get_application_data_counts()
+            if counts["tasks"] == 0 and counts["documents"] == 0:
+                ui.notify("La base est déjà vide.", type="info")
+                return
+
+            with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
+                ui.label("Vider la base SQLite ?").classes("text-h6 q-mb-sm")
+                ui.label(
+                    f"Cette action supprimera définitivement {counts['tasks']} tâche(s) "
+                    f"et {counts['documents']} document(s). Elle est irréversible."
+                ).classes("text-body2 q-mb-md")
+                with ui.row().classes("q-gutter-sm justify-end w-full"):
+                    ui.button("Annuler", on_click=dialog.close).props("flat")
+
+                    async def do_purge() -> None:
+                        try:
+                            removed = await asyncio.to_thread(purge_application_data)
+                            get_inbox_queue().clear_all_jobs()
+                            refresh_stats()
+                            refresh_tab("dashboard")
+                            refresh_tab("inbox")
+                            refresh_tab("ged")
+                            dialog.close()
+                            ui.notify(
+                                f"Base vidée — {removed['tasks']} tâche(s) supprimée(s).",
+                                type="positive",
+                            )
+                        except Exception as exc:
+                            ui.notify(f"Échec : {exc}", type="negative")
+
+                    ui.button(
+                        "Vider la base",
+                        icon="delete_forever",
+                        on_click=do_purge,
+                    ).props("color=negative unelevated")
+
+            dialog.open()
+
+        ui.button(
+            "Vider la base SQLite",
+            icon="delete_forever",
+            on_click=confirm_purge,
+        ).props("color=negative outline")

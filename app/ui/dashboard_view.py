@@ -86,7 +86,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         "par la secrétaire IA en cours..."
                     )
                 ui.label(text).classes("text-body2")
-            ui.linear_progress(indeterminate=True).classes("w-full q-mt-xs")
+            ui.spinner("line", size="lg", color="primary").classes("q-mt-xs")
 
     @ui.refreshable
     def render_manual_banner() -> None:
