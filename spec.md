@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.10-implemented  
-> **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — Récurrence virtuelle (mensuelle/trimestrielle/annuelle), enrichissement URL IA, Vue Liste wide layout, Kanban, relances email J-1  
+> **Version** : 0.11-implemented  
+> **Date** : 30 mai 2026  
+> **Statut** : V1 fonctionnelle — Sauvegarde SQLite chiffrée vers Google Drive (GPG + rclone), récurrence virtuelle, enrichissement URL IA, Vue Liste wide layout, Kanban, relances email J-1  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -133,6 +133,16 @@ SMTP_APP_PASSWORD=
 
 Fichier optionnel `~/Trankil-v2/config.yaml` (copie de `config.yaml.example`) pour `smtp_server`, `smtp_port`, `sender_email`. Le secret reste dans `.env`.
 
+**Sauvegarde SQLite chiffrée** — voir §2.4.2 et `scripts/backup_db.py` :
+
+```env
+BACKUP_GPG_PASSPHRASE=passphrase_robuste_32_caracteres_minimum
+RCLONE_REMOTE=gdrive
+DB_PATH=~/Trankil-v2/database.sqlite
+```
+
+Prérequis système : `brew install rclone gnupg` · remote rclone `gdrive` configuré via `rclone config`.
+
 ### 2.4 Lancement
 
 | Méthode | Usage |
@@ -193,6 +203,82 @@ launchctl load ~/Library/LaunchAgents/com.lala.IA_secretaire.plist
 > launchctl unload ~/Library/LaunchAgents/com.lala.trankilv2.plist 2>/dev/null
 > rm ~/Library/LaunchAgents/com.lala.trankilv2.plist 2>/dev/null
 > ```
+
+#### 2.4.2 Sauvegarde automatisée SQLite → Google Drive
+
+Sauvegarde quotidienne de `~/Trankil-v2/database.sqlite` vers Google Drive, chiffrée avant transfert (« Miroir sécurisé »).
+
+| Élément | Valeur |
+|---------|--------|
+| Script | `scripts/backup_db.py` |
+| Plist modèle | `scripts/com.lala.backup_db.plist` |
+| Plist installé | `~/Library/LaunchAgents/com.lala.backup_db.plist` |
+| Label | `com.lala.backup_db` |
+| Planification | Tous les jours à **03:00** (`StartCalendarInterval`) |
+| Remote rclone | `gdrive:Trankil-Backups/` |
+| Rétention | 7 jours glissants (`rclone delete --min-age 7d`) |
+| Logs | `logs/backup.log` (+ `logs/backup_launchd.log` pour launchd) |
+
+**Pipeline** (5 étapes, erreurs loguées par étape) :
+
+1. **Snapshot** — `sqlite3.backup()` en lecture seule (compatible mode WAL, sans bloquer l'app)
+2. **Compression** — `.gz` (niveau 6)
+3. **Chiffrement** — GPG symétrique AES256 via `BACKUP_GPG_PASSPHRASE` (`.env`)
+4. **Transfert** — `rclone copy` vers `gdrive:Trankil-Backups/`
+5. **Rotation** — suppression des fichiers distants de plus de 7 jours
+
+Nom des fichiers distants : `database-YYYYMMDD-HHMMSS.sqlite.gz.gpg`.
+
+**Prérequis** :
+
+```bash
+brew install rclone gnupg
+rclone config   # créer le remote "gdrive" (OAuth Google Drive)
+```
+
+**Test manuel** :
+
+```bash
+cd /Users/lala/Dev/IA_Personal_Secretaire
+source .venv/bin/activate
+python scripts/backup_db.py
+tail -20 logs/backup.log
+```
+
+**Installation / activation du LaunchAgent** :
+
+```bash
+mkdir -p ~/Dev/IA_Personal_Secretaire/logs
+cp ~/Dev/IA_Personal_Secretaire/scripts/com.lala.backup_db.plist \
+   ~/Library/LaunchAgents/com.lala.backup_db.plist
+launchctl load ~/Library/LaunchAgents/com.lala.backup_db.plist
+```
+
+**Vérifier** :
+
+```bash
+launchctl list | grep backup_db
+```
+
+**Déclencher immédiatement** (sans attendre 03:00) :
+
+```bash
+launchctl start com.lala.backup_db
+```
+
+**Désactiver** :
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.lala.backup_db.plist
+```
+
+**Restauration** (app arrêtée) :
+
+```bash
+rclone copy gdrive:Trankil-Backups/database-YYYYMMDD-HHMMSS.sqlite.gz.gpg /tmp/
+gpg -d /tmp/database-....sqlite.gz.gpg | gunzip > /tmp/database-restored.sqlite
+# Vérifier puis remplacer ~/Trankil-v2/database.sqlite
+```
 
 ---
 
@@ -1027,8 +1113,11 @@ IA_Personal_Secretaire/          # dépôt git
 │       ├── frequence.py         # récurrence virtuelle mensuelle/trimestrielle/annuelle
 │       ├── suggestion_infer.py
 │       └── analysis_logging.py
+├── logs/                        # backup.log (gitignored)
 ├── scripts/
 │   ├── init_db.py
+│   ├── backup_db.py             # sauvegarde SQLite → GPG → Google Drive
+│   ├── com.lala.backup_db.plist # modèle LaunchAgent (03:00 daily)
 │   └── check_ollama.py
 └── tests/                       # 94+ tests unitaires (conftest isolation SQLite)
 ```
@@ -1093,8 +1182,8 @@ IA_Personal_Secretaire/          # dépôt git
 
 ### Backlog V1.1+
 - [x] LaunchAgent `com.lala.IA_secretaire` — démarrage auto au login (§ 2.4.1)
+- [x] Sauvegarde SQLite chiffrée → Google Drive — GPG + rclone + LaunchAgent 03:00 (§ 2.4.2)
 - [ ] Daemon `launchd` pour notifications app fermée
-- [ ] Export backup zip `~/Trankil-v2`
 - [ ] Chemin racine configurable
 - [ ] Refactor Inbox pour réutiliser entièrement `create_document_intake`
 
@@ -1130,7 +1219,7 @@ IA_Personal_Secretaire/          # dépôt git
 | **Google Calendar** | **OFF par défaut**, bouton manuel ; procédure README |
 | **Notifications V1** | **App ouverte uniquement** ; launchd en V1.1 |
 | **HEIC** | **Oui V1** via `pillow-heif` |
-| **Backup zip** | Plus tard (Time Machine suffit) |
+| **Backup SQLite** | **GPG symétrique + rclone** → `gdrive:Trankil-Backups/`, rotation 7 jours, LaunchAgent 03:00 (§ 2.4.2) |
 | **Preview Dashboard** | **Non** — écran épuré ; preview réservée à l'Inbox |
 | **Zone dépôt Dashboard** | **Panneau `ui.expansion`** repliable — 3 colonnes à l'intérieur |
 | **Tâches manuelles** | **Oui** — sans document GED, depuis colonne 3 du Dashboard |
@@ -1211,6 +1300,11 @@ cp .env.example .env
 # Configuration email (copier config.yaml.example → ~/Trankil-v2/config.yaml)
 # SMTP_APP_PASSWORD=...  # mot de passe d'application Google dans .env
 
+# Sauvegarde SQLite chiffrée (prérequis : brew install rclone gnupg && rclone config)
+# BACKUP_GPG_PASSPHRASE=...  # dans .env
+# python scripts/backup_db.py
+# LaunchAgent : voir § 2.4.2
+
 # Vérifier Ollama (fallback optionnel)
 python scripts/check_ollama.py
 ollama pull llama3.2-vision
@@ -1221,4 +1315,4 @@ pytest tests/ -q
 
 ---
 
-**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard **bi-mode** (Kanban + **Vue Liste wide layout**), cartes pastel par lot, relances macOS + **email J-1**, Autopilote, routines récurrentes, LaunchAgent, purge SQLite, isolation tests SQLite et **89+ tests** pytest. Prochaine étape recommandée : finaliser le README.
+**État actuel** : V1 fonctionnelle avec **multi-IA** (Gemini natif + OpenRouter Éco), fallback Ollama, Dashboard **bi-mode** (Kanban + **Vue Liste wide layout**), cartes pastel par lot, relances macOS + **email J-1**, Autopilote, routines récurrentes, LaunchAgent app + **sauvegarde SQLite chiffrée Google Drive**, purge SQLite, isolation tests SQLite et **89+ tests** pytest. Prochaine étape recommandée : finaliser le README.

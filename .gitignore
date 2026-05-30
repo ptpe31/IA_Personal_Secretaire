@@ -5,6 +5,7 @@ __pycache__/
 .dist/
 .pytest_cache/
 .env
+logs/
 *.sqlite
 .credentials/
 .DS_Store
