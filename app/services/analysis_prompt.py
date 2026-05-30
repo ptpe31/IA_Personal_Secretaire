@@ -12,6 +12,9 @@ RÈGLES DE SÉCURITÉ ABSOLUES :
 2. Découpage : Si le document liste plusieurs dates (ex: "les 4, 11, 18 juin"), crée obligatoirement une tâche distincte par date.
 3. Année courante : Interprète les dates sans année explicite comme appartenant à l'année {current_year}.
 4. Suggestion (suggestion) : Recommandation logistique ultra-courte (ex: "Horaires: 18h-19h", "Appeler au 05.XX.XX.XX").
+5. Enrichissement contextuel :
+   - Si une URL ou adresse de site web est visible (même en bas de page), extrais-la fidèlement dans "source_url" (URL complète https://...).
+   - Si une récurrence est mentionnée ("chaque mois", "trimestriel", "annuel"), mappe-la sur frequence : "mensuelle", "trimestrielle" ou "annuelle". Sinon null.
 
 Structure JSON attendue :
 {{
@@ -24,7 +27,9 @@ Structure JSON attendue :
       "category": "pro ou perso",
       "tags": ["motcle"],
       "justification_proof": "Extrait exact",
-      "suggestion": "Action courte"
+      "suggestion": "Action courte",
+      "frequence": "mensuelle | trimestrielle | annuelle | null",
+      "source_url": "https://... ou null"
     }}
   ],
   "document_summary": "Résumé",
@@ -49,7 +54,9 @@ Réponds UNIQUEMENT en JSON valide avec cette structure :
       "category": "pro ou perso",
       "tags": ["motcle"],
       "justification_proof": "Extrait exact du document",
-      "suggestion": "Action courte"
+      "suggestion": "Action courte",
+      "frequence": "mensuelle | trimestrielle | annuelle | null",
+      "source_url": "https://... ou null"
     }}
   ],
   "document_summary": "Résumé",
@@ -59,7 +66,8 @@ Réponds UNIQUEMENT en JSON valide avec cette structure :
 Règles :
 - Une tâche par date distincte (ex: "les 4, 11, 18 juin" → 3 tâches).
 - Année courante : {current_year} pour les dates sans année.
-- Pas de commentaires ni monologue dans les valeurs JSON."""
+- Pas de commentaires ni monologue dans les valeurs JSON.
+- URL visible → champ source_url (URL complète). Récurrence détectée → frequence (mensuelle, trimestrielle, annuelle)."""
 
 
 def build_gemini_system_prompt() -> str:

@@ -25,6 +25,9 @@ class TaskDTO:
     calendar_event_id: str | None = None
     suggestion: str | None = None
     recurrence_pattern: str | None = None
+    frequence: str | None = None
+    date_reference: date | None = None
+    source_url: str | None = None
     parent_task_id: int | None = None
     created_at: datetime | None = None
     tags: list[str] = field(default_factory=list)

@@ -23,6 +23,11 @@ from app.ui.document_upload import create_document_intake
 from app.ui.inbox_ui_safe import run_if_client_alive
 from app.ui.manual_task_form import create_manual_task_form
 from app.ui.task_edit_dialog import open_task_edit_dialog
+from app.ui.task_badges import (
+    notify_task_completed,
+    render_frequence_icon,
+    render_source_url_link,
+)
 from app.ui.tab_registry import register_tab_refresh
 from app.ui.google_theme import (
     BADGE_RECURRENCE,
@@ -274,12 +279,14 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         with ui.card().classes(card_classes).props("flat"):
             with ui.row().classes("items-start q-gutter-xs q-mb-sm"):
                 ui.label(cat_label).classes(category_badge_classes(task.category))
+                render_frequence_icon(task)
                 ui.label(task.title).classes(
                     "text-subtitle2 text-weight-medium text-grey-9 col"
                 )
                 if task.recurrence_pattern:
                     label = RECURRENCE_DISPLAY.get(task.recurrence_pattern, "Routine")
                     ui.label(f"🔁 {label}").classes(BADGE_RECURRENCE)
+                render_source_url_link(task)
 
             render_date_meta(
                 icon="mail",
@@ -319,14 +326,8 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
                     def mark_done(e, tid: int = task.id) -> None:
                         if e.value:
-                            spawned_id = archive_task(tid)
-                            if spawned_id:
-                                ui.notify(
-                                    "Tâche archivée — prochaine occurrence planifiée.",
-                                    type="positive",
-                                )
-                            else:
-                                ui.notify("Tâche archivée.", type="positive")
+                            result = archive_task(tid)
+                            notify_task_completed(tid, result)
                             render_tasks_workspace.refresh()
 
                     ui.checkbox("Fait", on_change=mark_done).props("color=green-7")
@@ -428,6 +429,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 ui.label(cat_label).classes(
                     f"{category_badge_classes(task.category)} shrink-0"
                 )
+                render_frequence_icon(task)
                 title_label = ui.label(task.title).classes(title_classes)
                 title_label.on(
                     "click",
@@ -437,6 +439,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                         on_deleted=render_tasks_workspace.refresh,
                     ),
                 ).tooltip("Modifier")
+                render_source_url_link(task)
 
             with ui.element("div").classes(LIST_COL_DEADLINE):
                 with ui.row().classes("items-center gap-2 min-w-0"):
@@ -465,14 +468,8 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
                 def mark_done(e, tid: int = task.id) -> None:
                     if e.value:
-                        spawned_id = archive_task(tid)
-                        if spawned_id:
-                            ui.notify(
-                                "Tâche archivée — prochaine occurrence planifiée.",
-                                type="positive",
-                            )
-                        else:
-                            ui.notify("Tâche archivée.", type="positive")
+                        result = archive_task(tid)
+                        notify_task_completed(tid, result)
                         render_tasks_workspace.refresh()
 
                 ui.checkbox(on_change=mark_done).props("color=green-7 dense").tooltip(

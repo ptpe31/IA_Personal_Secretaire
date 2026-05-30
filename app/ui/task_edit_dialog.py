@@ -10,6 +10,11 @@ from nicegui import ui
 from app.models.task import TaskDTO
 from app.services.task_service import delete_task, parse_tags_input, update_task
 from app.utils.dates import parse_optional_date
+from app.utils.frequence import (
+    FREQUENCE_SELECT_OPTIONS,
+    frequence_from_label,
+    label_from_frequence,
+)
 
 
 def open_task_edit_dialog(
@@ -55,6 +60,24 @@ def open_task_edit_dialog(
             value=", ".join(task.tags),
         ).classes("w-full")
 
+        ui.label("Récurrence").classes("text-caption text-grey-7")
+        frequence_input = ui.select(
+            FREQUENCE_SELECT_OPTIONS,
+            value=label_from_frequence(task.frequence),
+            label="Récurrence",
+        ).classes("w-full")
+
+        source_url_input = ui.input(
+            "Lien externe (URL)",
+            value=task.source_url or "",
+        ).props("outlined").classes("w-full")
+        if task.source_url:
+            ui.link(
+                "Aller sur le site",
+                task.source_url,
+                new_tab=True,
+            ).classes("text-blue-7 text-sm q-mb-sm")
+
         notes_input = ui.textarea(
             "Notes",
             value=task.notes or "",
@@ -94,6 +117,8 @@ def open_task_edit_dialog(
                             tags=parse_tags_input(tags_input.value or ""),
                             notes=notes_input.value,
                             suggestion=suggestion_input.value,
+                            frequence=frequence_from_label(str(frequence_input.value)),
+                            source_url=source_url_input.value,
                         )
                         ui.notify("Tâche mise à jour.", type="positive")
                         dialog.close()

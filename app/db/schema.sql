@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS tasks (
         recurrence_pattern IS NULL
         OR recurrence_pattern IN ('daily', 'weekly', 'monthly')
     ),
+    frequence TEXT CHECK (
+        frequence IS NULL
+        OR frequence IN ('mensuelle', 'trimestrielle', 'annuelle')
+    ),
+    date_reference DATE,
+    source_url TEXT,
     parent_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     calendar_synced INTEGER NOT NULL DEFAULT 0,
     calendar_event_id TEXT,

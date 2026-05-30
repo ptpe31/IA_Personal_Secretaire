@@ -57,6 +57,8 @@ def _task_to_validation(task: TaskAnalysisItem, *, document_summary: str) -> Tas
         raw_summary=document_summary,
         justification_proof=task.justification_proof,
         suggestion=task.suggestion,
+        frequence=task.frequence,
+        source_url=task.source_url,
     )
 
 

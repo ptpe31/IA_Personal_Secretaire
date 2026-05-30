@@ -44,6 +44,8 @@ class TaskAnalysisItem(BaseModel):
     justification_proof: str = "Aucune"
     suggestion: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    frequence: Literal["mensuelle", "trimestrielle", "annuelle"] | None = None
+    source_url: str | None = None
 
     @field_validator("date_emission", mode="before")
     @classmethod
@@ -92,6 +94,42 @@ class TaskAnalysisItem(BaseModel):
             return None
         return text
 
+    @field_validator("frequence", mode="before")
+    @classmethod
+    def normalize_frequence(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in ("", "null", "none", "n/a", "na", "-", "—", "aucune"):
+            return None
+        mapping = {
+            "mensuel": "mensuelle",
+            "mensuelle": "mensuelle",
+            "monthly": "mensuelle",
+            "mois": "mensuelle",
+            "trimestriel": "trimestrielle",
+            "trimestrielle": "trimestrielle",
+            "quarterly": "trimestrielle",
+            "trimestre": "trimestrielle",
+            "annuel": "annuelle",
+            "annuelle": "annuelle",
+            "yearly": "annuelle",
+            "an": "annuelle",
+        }
+        return mapping.get(text)
+
+    @field_validator("source_url", mode="before")
+    @classmethod
+    def normalize_source_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text.lower() in ("", "null", "none", "n/a", "na", "-", "—"):
+            return None
+        if not text.startswith(("http://", "https://")):
+            text = f"https://{text.lstrip('/')}"
+        return text
+
 
 class DocumentAnalysisResult(BaseModel):
     """Résultat multi-tâches d'une analyse documentaire."""
@@ -127,6 +165,8 @@ def normalize_analysis_payload(data: dict) -> dict:
         "justification_proof",
         "suggestion",
         "confidence",
+        "frequence",
+        "source_url",
     )
     task = {key: data[key] for key in task_keys if key in data}
     if "justification_proof" not in task:

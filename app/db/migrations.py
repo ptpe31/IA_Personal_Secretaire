@@ -117,6 +117,13 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
 
     _ensure_email_reminders_log(conn)
 
+    if _table_exists(conn, "tasks"):
+        _add_column_if_missing(conn, table="tasks", column="frequence", definition="TEXT")
+        _add_column_if_missing(
+            conn, table="tasks", column="date_reference", definition="DATE"
+        )
+        _add_column_if_missing(conn, table="tasks", column="source_url", definition="TEXT")
+
     if _table_exists(conn, "settings"):
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('autopilot_enabled', 'true')"

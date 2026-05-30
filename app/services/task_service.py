@@ -12,6 +12,7 @@ from app.models.task import TaskDTO
 from app.services.ged_service import file_sha256, guess_mime_type, move_inbox_to_ged
 from app.utils.analysis_logging import log_tasks_validated
 from app.utils.dates import compute_db_status, compute_kanban_column, parse_optional_date
+from app.utils.frequence import FREQUENCE_VALUES, calculer_prochaine_echeance
 from app.utils.recurrence import RECURRENCE_PATTERNS, compute_next_occurrence
 from app.utils.tags import normalize_tags
 
@@ -29,6 +30,8 @@ class TaskValidationInput:
     raw_summary: str = ""
     justification_proof: str | None = None
     suggestion: str | None = None
+    frequence: str | None = None
+    source_url: str | None = None
 
 
 def parse_tags_input(raw: str) -> list[str]:
@@ -119,8 +122,9 @@ def validate_inbox_tasks(
                 """
                 INSERT INTO tasks (
                     title, category, date_emission, date_event, deadline,
-                    status, document_id, raw_summary, justification_proof, suggestion
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, document_id, raw_summary, justification_proof, suggestion,
+                    frequence, source_url, date_reference
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     title,
@@ -133,6 +137,13 @@ def validate_inbox_tasks(
                     task_summary,
                     proof,
                     suggestion,
+                    item.frequence,
+                    (item.source_url or "").strip() or None,
+                    (
+                        (item.deadline or item.date_event or item.date_emission).isoformat()
+                        if item.frequence
+                        else None
+                    ),
                 ),
             )
             task_id = int(task_cursor.lastrowid)
@@ -212,7 +223,8 @@ def list_tasks(
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.created_at, t.raw_summary, t.notes,
-            t.suggestion, t.recurrence_pattern, t.parent_task_id,
+            t.suggestion, t.recurrence_pattern, t.frequence, t.date_reference,
+            t.source_url, t.parent_task_id,
             t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
@@ -280,6 +292,13 @@ def _row_to_task(row) -> TaskDTO:
         recurrence_pattern=(
             str(row["recurrence_pattern"]) if row["recurrence_pattern"] else None
         ),
+        frequence=str(row["frequence"]) if row["frequence"] else None,
+        date_reference=(
+            date.fromisoformat(str(row["date_reference"]))
+            if row["date_reference"]
+            else None
+        ),
+        source_url=str(row["source_url"]).strip() if row["source_url"] else None,
         parent_task_id=(
             int(row["parent_task_id"]) if row["parent_task_id"] else None
         ),
@@ -300,7 +319,8 @@ def get_task_by_id(task_id: int) -> TaskDTO | None:
         SELECT
             t.id, t.title, t.category, t.date_emission, t.date_event, t.deadline,
             t.status, t.completed_at, t.document_id, t.created_at, t.raw_summary, t.notes,
-            t.suggestion, t.recurrence_pattern, t.parent_task_id,
+            t.suggestion, t.recurrence_pattern, t.frequence, t.date_reference,
+            t.source_url, t.parent_task_id,
             t.calendar_synced, t.calendar_event_id,
             d.stored_path, d.original_filename,
             GROUP_CONCAT(tg.name, ',') AS tag_list
@@ -445,12 +465,47 @@ def _spawn_recurrence_task(conn, row) -> int | None:
     return int(cursor.lastrowid)
 
 
+def _advance_virtual_recurrence(conn, row) -> None:
+    """Reporte l'échéance d'une tâche récurrente virtuelle (même ligne SQLite)."""
+    frequence = row["frequence"]
+    if not frequence or frequence not in FREQUENCE_VALUES:
+        return
+
+    reference = row["deadline"] or row["date_event"] or row["date_emission"]
+    if not reference:
+        return
+
+    base_date = date.fromisoformat(str(reference))
+    next_deadline = calculer_prochaine_echeance(base_date, str(frequence))
+    kanban = compute_kanban_column(completed_at=None, deadline=next_deadline)
+    status = compute_db_status(kanban)
+    date_ref = row["date_reference"] or reference
+
+    conn.execute(
+        """
+        UPDATE tasks
+        SET deadline = ?, date_event = ?, status = ?, completed_at = NULL,
+            date_reference = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+        """,
+        (
+            next_deadline.isoformat(),
+            next_deadline.isoformat(),
+            status,
+            str(date_ref),
+            int(row["id"]),
+        ),
+    )
+
+
 def archive_task(task_id: int) -> int | None:
     """
-    Marque une tâche comme terminée.
+    Marque une tâche comme terminée ou reporte une récurrence virtuelle.
 
     Returns:
-        ID de la prochaine occurrence si la tâche est récurrente, sinon None.
+        - task_id si récurrence virtuelle (même ligne mise à jour)
+        - nouvel ID si récurrence classique (spawn)
+        - None si archivage simple
     """
     now = datetime.now().replace(microsecond=0).isoformat(sep=" ")
     conn = get_connection()
@@ -458,13 +513,24 @@ def archive_task(task_id: int) -> int | None:
         row = conn.execute(
             """
             SELECT id, title, category, date_emission, date_event, deadline,
-                   suggestion, recurrence_pattern, parent_task_id
+                   suggestion, recurrence_pattern, frequence, date_reference,
+                   parent_task_id
             FROM tasks WHERE id = ?
             """,
             (task_id,),
         ).fetchone()
         if row is None:
             raise ValueError(f"Tâche {task_id} introuvable.")
+
+        if row["frequence"]:
+            _advance_virtual_recurrence(conn, row)
+            conn.commit()
+            logger.info(
+                "Récurrence virtuelle — tâche %s reportée (%s)",
+                task_id,
+                row["frequence"],
+            )
+            return task_id
 
         conn.execute(
             """
@@ -558,17 +624,24 @@ def update_task(
     tags: list[str],
     notes: str | None = None,
     suggestion: str | None = None,
+    frequence: str | None = None,
+    source_url: str | None = None,
 ) -> None:
     """Met à jour une tâche existante (spec §6.3 — Modifier)."""
     title = title.strip()
     if not title:
         raise ValueError("Le titre est obligatoire.")
 
+    if frequence is not None and frequence not in FREQUENCE_VALUES:
+        raise ValueError(f"Fréquence invalide : {frequence}")
+
     category = "perso" if category == "perso" else "pro"
+    url_clean = (source_url or "").strip() or None
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT completed_at FROM tasks WHERE id = ?", (task_id,)
+            "SELECT completed_at, date_reference FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             raise ValueError(f"Tâche {task_id} introuvable.")
@@ -580,12 +653,19 @@ def update_task(
         )
         kanban = compute_kanban_column(completed_at=completed_at, deadline=deadline)
         status = compute_db_status(kanban)
+        date_ref = row["date_reference"]
+        if frequence and not date_ref:
+            ref = deadline or date_event or date_emission
+            date_ref = ref.isoformat() if ref else None
+        elif not frequence:
+            date_ref = None
 
         conn.execute(
             """
             UPDATE tasks SET
                 title = ?, category = ?, date_emission = ?, date_event = ?,
                 deadline = ?, status = ?, notes = ?, suggestion = ?,
+                frequence = ?, source_url = ?, date_reference = ?,
                 updated_at = datetime('now', 'localtime')
             WHERE id = ?
             """,
@@ -598,6 +678,9 @@ def update_task(
                 status,
                 notes.strip() if notes else None,
                 suggestion.strip() if suggestion else None,
+                frequence,
+                url_clean,
+                date_ref,
                 task_id,
             ),
         )

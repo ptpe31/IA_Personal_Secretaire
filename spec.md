@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.9-implemented  
+> **Version** : 0.10-implemented  
 > **Date** : 29 mai 2026  
-> **Statut** : V1 fonctionnelle — Vue Liste « wide layout » (grille 12 col.), Kanban, relances email J-1, cartes pastel par lot  
+> **Statut** : V1 fonctionnelle — Récurrence virtuelle (mensuelle/trimestrielle/annuelle), enrichissement URL IA, Vue Liste wide layout, Kanban, relances email J-1  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -265,7 +265,10 @@ Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérie
 | `raw_summary` | TEXT NULL | Résumé document IA — indexé pour recherche GED |
 | `justification_proof` | TEXT NULL | Citation / preuve extraite par l'IA pour la tâche |
 | `suggestion` | TEXT NULL | Conseil actionnable IA (ex. numéro à appeler, horaires) |
-| `recurrence_pattern` | TEXT NULL | `'daily'` \| `'weekly'` \| `'monthly'` — routine récurrente |
+| `recurrence_pattern` | TEXT NULL | `'daily'` \| `'weekly'` \| `'monthly'` — routine récurrente (spawn à l'archivage) |
+| `frequence` | TEXT NULL | `'mensuelle'` \| `'trimestrielle'` \| `'annuelle'` — **récurrence virtuelle** (une seule ligne SQLite) |
+| `date_reference` | DATE NULL | Date du premier événement (ancrage récurrence virtuelle) |
+| `source_url` | TEXT NULL | URL extraite du document (site web, portail en ligne) |
 | `parent_task_id` | INTEGER FK NULL | Lien vers la tâche d'origine d'une routine (`tasks.id`) |
 | `calendar_synced` | BOOLEAN DEFAULT 0 | Événement Google créé |
 | `calendar_event_id` | TEXT NULL | ID événement Google |
@@ -376,7 +379,9 @@ Fonctions utilitaires :
 
 **Multi-tâches** : un même document peut produire plusieurs tâches (ex. courrier avec plusieurs échéances). Toutes partagent le même `document_id` après validation.
 
-**Routines récurrentes** : une tâche manuelle peut porter un `recurrence_pattern`. Lors de l'archivage (« Fait »), la prochaine occurrence est créée automatiquement avec la même routine ; `parent_task_id` pointe vers la tâche racine.
+**Routines récurrentes (spawn)** : une tâche manuelle peut porter un `recurrence_pattern` (`daily` / `weekly` / `monthly`). Lors de l'archivage (« Fait »), la prochaine occurrence est **créée** automatiquement ; `parent_task_id` pointe vers la tâche racine.
+
+**Récurrence virtuelle (projection)** : une tâche (document ou manuelle) peut porter un `frequence` (`mensuelle` / `trimestrielle` / `annuelle`). **Une seule ligne** en base — pas de duplication annuelle. Au « Fait », `deadline` et `date_event` sont reportées via `calculer_prochaine_echeance()` ; la tâche reste active (`completed_at = NULL`). `date_reference` mémorise la date du premier événement. Priorité à `frequence` sur `recurrence_pattern` dans `archive_task()`.
 
 ### 4.3 Index recommandés
 
@@ -466,7 +471,7 @@ Formulaire « Création manuelle / Routine » (`manual_task_form.py`) :
 
 Service : `create_manual_task()` dans `task_service.py`.
 
-**Récurrence à l'archivage** (`archive_task()`) — logique dans `app/utils/recurrence.py` :
+**Récurrence classique à l'archivage** (`recurrence_pattern`) — logique dans `app/utils/recurrence.py` :
 
 | Pattern SQLite | Libellé UI | Prochaine échéance |
 |----------------|------------|-------------------|
@@ -474,9 +479,21 @@ Service : `create_manual_task()` dans `task_service.py`.
 | `weekly` | Hebdomadaire | +7 jours |
 | `monthly` | Mensuel | +1 mois (`relativedelta`) |
 
-Lors du clic « Fait » sur une tâche récurrente : archivage + création immédiate de la prochaine occurrence (`todo`) avec même titre, catégorie, suggestion et `recurrence_pattern`. Badge **🔁 Quotidien/Hebdomadaire/Mensuel** sur les cartes Kanban.
+Lors du clic « Fait » : archivage + **insertion** de la prochaine occurrence. Badge **🔁 Quotidien/Hebdomadaire/Mensuel** sur les cartes Kanban.
 
-Migration SQLite : colonnes `recurrence_pattern` et `parent_task_id` ajoutées via `migrations.py` au démarrage.
+**Récurrence virtuelle** (`frequence`) — logique dans `app/utils/frequence.py` :
+
+| Valeur SQLite | Libellé UI | Prochaine échéance |
+|---------------|------------|-------------------|
+| `mensuelle` | Mensuelle | +1 mois |
+| `trimestrielle` | Trimestrielle | +3 mois |
+| `annuelle` | Annuelle | +1 an |
+
+Lors du clic « Fait » : **même ligne** mise à jour (`deadline` / `date_event` avancées, statut recalculé). Icône **`refresh`** violette sur cartes Kanban et vue Liste. Configurable aussi depuis le modal **Modifier la tâche** (dropdown Récurrence).
+
+**Enrichissement URL** : si `source_url` est renseigné (IA ou édition manuelle), lien **URL** cliquable (nouvel onglet) sur cartes Kanban et vue Liste ; champ « Lien externe » + bouton « Aller sur le site » dans le modal d'édition.
+
+Migration SQLite : colonnes `recurrence_pattern`, `parent_task_id`, `frequence`, `date_reference`, `source_url` ajoutées via `migrations.py` au démarrage.
 
 ### 5.5 Indicateur « En cours de traitement »
 
@@ -528,7 +545,7 @@ Regroupement par **lots** (même `document_id` ou création manuelle) via `_grou
 
 | Colonnes | Libellé | Contenu |
 |----------|---------|---------|
-| **1–6** | Tâche | Badge Pro/Perso + titre (gras) ; enfants : flèche `subdirectory_arrow_right`, indentation `pl-4`, `text-sm text-gray-500` |
+| **1–6** | Tâche | Badge Pro/Perso + icône `refresh` si récurrence virtuelle + titre (gras) + lien **URL** si `source_url` ; enfants : flèche `subdirectory_arrow_right`, indentation `pl-4`, `text-sm text-gray-500` |
 | **7–8** | Deadline | Icône `alarm` + date (`format_date_fr`) ou `—` |
 | **9–10** | Événement | Icône `calendar_today` + `date_event` ou `—` |
 | **11** | Conseil IA | Icône `lightbulb` + texte tronqué (`truncate`, tooltip au survol) ou `—` |
@@ -574,21 +591,23 @@ Implémentation : `sort_kanban_urgent()` et `sort_kanban_todo()` dans `app/utils
 ### 5.10 Carte tâche
 
 ```
-[Pro] Séance de formation (1/3)              [🔁 Mensuel]
+[Pro] [↻] Déclaration URSSAF              [URL]
 📧 28/05/2026
-• Date événement : 05/11/2026
-• Deadline : 05/11/2026
-💡 Horaires : 14h à 16h
-• Tags : #formation #organisme
+• Date événement : 10/06/2026
+• Deadline : 10/06/2026
+💡 Déclarer en ligne avant échéance
+• Tags : #urssaf #cotisation
 ☐ Fait    [Modifier] [@ GED] [Suppr.]    [📅 Sync Calendar]
 ```
 
 - Fond **pastel par lot document** (`BATCH_PASTEL_PALETTE`, `task_card_classes()`)
 - Date de réception : icône mail + pilule uniquement (sans libellé « Reçu le »)
+- **Récurrence virtuelle** : icône `refresh` (tooltip Mensuelle / Trimestrielle / Annuelle)
+- **Lien externe** : texte **URL** cliquable si `source_url` renseigné (nouvel onglet)
 
 Interactions :
-- **Checkbox « Fait »** → archivage ; si récurrente → prochaine occurrence créée automatiquement
-- **Bouton « Modifier »** → modal d'édition (`task_edit_dialog.py`)
+- **Checkbox « Fait »** → archivage simple ; si `recurrence_pattern` → spawn prochaine occurrence ; si `frequence` → report échéance sur la même ligne (notification « Échéance reportée »)
+- **Bouton « Modifier »** → modal d'édition (`task_edit_dialog.py`) — champs **Récurrence** (dropdown) et **Lien externe (URL)**
 - **Bouton « @ »** (`alternate_email`) → ouvre le fichier GED associé (`open_file` macOS) ; masqué si pas de `stored_path`
 - **Bouton « Suppr. »** → suppression définitive (fichier GED conservé)
 - **Sync Calendar** → création événement manuelle (§10)
@@ -653,6 +672,8 @@ Helpers exportés : `task_card_classes()`, `batch_border_left_classes()`, `view_
       "tags": ["formation"],
       "justification_proof": "« Séances de formation obligatoires les 5, 12 et 19 novembre »",
       "suggestion": "Horaires : 14h à 16h",
+      "frequence": null,
+      "source_url": null,
       "confidence": 0.85
     },
     {
@@ -685,8 +706,10 @@ Format mono-tâche (legacy) normalisé automatiquement par `normalize_analysis_p
 | `document_summary` | Résumé global du document ; **persisté** via `raw_summary` sur chaque tâche liée |
 | `justification_proof` | Citation ou extrait justifiant la tâche |
 | `suggestion` | Conseil actionnable court pour l'utilisateur |
+| `frequence` | Récurrence détectée → `mensuelle` \| `trimestrielle` \| `annuelle` ; sinon `null` (normalisation Pydantic) |
+| `source_url` | URL complète (`https://…`) si site web visible sur le document ; préfixe `https://` ajouté si absent |
 
-Post-traitement : `task_expansion.py` (ancrage temporel relatif), inférence suggestion de secours (`suggestion_infer.py`).
+Post-traitement : `task_expansion.py` (ancrage temporel relatif), inférence suggestion de secours (`suggestion_infer.py`). Champs `frequence` et `source_url` persistés à la validation Inbox et en Autopilote.
 
 ### 6.4 Mode mock (sans IA configurée)
 
@@ -758,12 +781,18 @@ Toggle dans **Paramètres** : « Autopilote (validation automatique) » — **ON
 
 ### 8.2 Routines récurrentes
 
-Service : `create_manual_task()` + `archive_task()` dans `task_service.py` · calcul dates : `app/utils/recurrence.py`
+Service : `create_manual_task()` + `archive_task()` dans `task_service.py`
+
+| Type | Calcul dates | Comportement au « Fait » |
+|------|--------------|--------------------------|
+| **Classique** (`recurrence_pattern`) | `app/utils/recurrence.py` | Archivage + insertion prochaine occurrence (`parent_task_id` = racine) |
+| **Virtuelle** (`frequence`) | `app/utils/frequence.py` · `calculer_prochaine_echeance()` | Même ligne : `deadline` / `date_event` avancées, tâche reste active |
 
 | Événement | Action |
 |-----------|--------|
 | Clic « Créer la tâche » | Insertion tâche manuelle sans `document_id` ; `deadline` = date de départ |
 | Clic « Fait » + `recurrence_pattern` | Archivage + insertion prochaine occurrence avec `parent_task_id` = racine |
+| Clic « Fait » + `frequence` | Report échéance sur la même ligne (zéro duplication en base) |
 
 ### 8.3 Relances anti-oubli (macOS)
 
@@ -846,7 +875,7 @@ SDK : **`google-genai`** · `genai.Client` · `temperature=0.0` · JSON strict :
 1. Charger clé API (`config.get_gemini_api_key()`).
 2. Préparer l'image : PDF → page 1 PNG, HEIC → PNG (`load_image_bytes_for_vision`).
 3. Appel multimodal via `client.models.generate_content()` + `types.Part.from_bytes`.
-4. Prompt système : `build_gemini_system_prompt()` (règles anti-monologue, max 8 mots titre).
+4. Prompt système : `build_gemini_system_prompt()` (règles anti-monologue, max 8 mots titre, **extraction URL + récurrence**).
 5. Parser JSON → `finalize_document_analysis()`.
 
 ### 9.4 Configuration OpenRouter (mode Éco)
@@ -986,6 +1015,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── ged_view.py
 │   │   ├── settings_view.py
 │   │   ├── task_edit_dialog.py
+│   │   ├── task_badges.py       # icône récurrence + lien URL + notifications « Fait »
 │   │   ├── calendar_button.py
 │   │   └── tab_registry.py
 │   └── utils/
@@ -993,13 +1023,14 @@ IA_Personal_Secretaire/          # dépôt git
 │       ├── tags.py
 │       ├── slugify.py
 │       ├── file_preview.py
-│       ├── recurrence.py        # patterns daily/weekly/monthly
+│       ├── recurrence.py        # patterns daily/weekly/monthly (spawn)
+│       ├── frequence.py         # récurrence virtuelle mensuelle/trimestrielle/annuelle
 │       ├── suggestion_infer.py
 │       └── analysis_logging.py
 ├── scripts/
 │   ├── init_db.py
 │   └── check_ollama.py
-└── tests/                       # 89+ tests unitaires (conftest isolation SQLite)
+└── tests/                       # 94+ tests unitaires (conftest isolation SQLite)
 ```
 
 ---
@@ -1056,6 +1087,8 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] **Thème Google Workspace** (`google_theme.py`) — header blanc, chips, cartes pastel par lot
 - [x] **Vue Liste wide layout** — grille 12 col., blocs lot, suppression groupée (`delete_tasks`)
 - [x] Ouverture GED (@) depuis les cartes Kanban
+- [x] **Récurrence virtuelle** — `frequence` mensuelle/trimestrielle/annuelle, report échéance sans duplication SQLite
+- [x] **Enrichissement URL** — extraction IA `source_url`, lien cliquable Kanban/Liste, édition manuelle
 - [ ] README complet à jour avec workflow Dashboard-first
 
 ### Backlog V1.1+
@@ -1101,7 +1134,8 @@ IA_Personal_Secretaire/          # dépôt git
 | **Preview Dashboard** | **Non** — écran épuré ; preview réservée à l'Inbox |
 | **Zone dépôt Dashboard** | **Panneau `ui.expansion`** repliable — 3 colonnes à l'intérieur |
 | **Tâches manuelles** | **Oui** — sans document GED, depuis colonne 3 du Dashboard |
-| **Routines récurrentes** | **Oui** — daily / weekly / monthly ; prochaine occurrence à l'archivage |
+| **Routines récurrentes** | **Oui** — daily / weekly / monthly (spawn) ; **récurrence virtuelle** mensuelle / trimestrielle / annuelle (projection, une ligne) |
+| **Enrichissement URL** | Champ `source_url` extrait par IA ou saisi manuellement ; lien **URL** sur cartes Dashboard |
 | **Purge données** | Bouton Paramètres — vide SQLite métier, conserve settings |
 
 ---
@@ -1135,6 +1169,8 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] Notifications J-3 et J-1 sur Mac (app ouverte).
 - [x] Relance email J-1 (Gmail, mot de passe d'application).
 - [x] Vue Liste Dashboard — grille wide layout (Deadline, Événement, Conseil IA, suppression lot).
+- [x] Récurrence virtuelle : « Fait » reporte l'échéance sans créer de nouvelle ligne.
+- [x] URL documentaire : détection IA + lien cliquable + correction manuelle dans « Modifier ».
 - [x] Sync Google Calendar manuelle + option auto (OFF par défaut).
 - [x] Toggle Autopilote dans Paramètres.
 - [x] Purge SQLite depuis Paramètres (données métier uniquement).
