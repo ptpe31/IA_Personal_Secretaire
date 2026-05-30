@@ -122,6 +122,49 @@ body, .nicegui-content {
 .trankil-list-batch:hover {
     box-shadow: 0 2px 8px rgba(60, 64, 67, 0.08);
 }
+.trankil-omnibox-wrap {
+    background: #ffffff;
+    border: 1px solid #dadce0;
+    border-radius: 9999px;
+    padding: 0 12px 0 10px;
+    min-height: 36px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.trankil-omnibox-wrap:focus-within {
+    border-color: #aecbfa;
+    box-shadow: 0 0 0 1px #aecbfa;
+}
+.trankil-omnibox-wrap .q-field {
+    flex: 1;
+    min-width: 0;
+}
+.trankil-omnibox-wrap .q-field__control {
+    min-height: 34px;
+}
+.trankil-omnibox-wrap .q-field__control:before,
+.trankil-omnibox-wrap .q-field__control:after {
+    display: none;
+}
+.trankil-omnibox-wrap input {
+    font-size: 0.875rem;
+    color: #3c4043;
+}
+.trankil-tag-suggestion {
+    border-radius: 9999px;
+    border: 1px solid #dadce0;
+    padding: 2px 12px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: none;
+    min-height: 28px;
+    color: #5f6368;
+    background: #ffffff;
+}
+.trankil-tag-suggestion:hover {
+    background: #e8f0fe;
+    color: #1967d2;
+    border-color: #aecbfa;
+}
 """
 
 # Quasar utility bundles + Tailwind (NiceGUI tailwind=True)

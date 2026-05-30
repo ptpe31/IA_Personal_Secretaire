@@ -23,6 +23,12 @@ def matches_search_query(
     if not needle:
         return True
 
+    if needle.startswith("#"):
+        tag_needle = needle.lstrip("#")
+        if not tag_needle:
+            return bool(tags)
+        return any(tag_needle in tag.lower() for tag in tags)
+
     haystacks = [
         title,
         raw_summary or "",

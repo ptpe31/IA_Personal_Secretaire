@@ -6,7 +6,8 @@ from nicegui import ui
 
 from app.models.archive import ArchiveItem
 from app.services.archive_service import search_archives
-from app.services.task_service import list_all_tags
+from app.services.task_service import list_all_tags, suggest_tags
+from app.ui.google_theme import chip_classes
 from app.ui.tab_registry import register_tab_refresh
 from app.utils.dates import format_date_fr, parse_optional_date
 from app.utils.file_preview import preview_data_url
@@ -23,33 +24,43 @@ def create_ged_view():
     """Construit la vue Archives avec recherche et preview."""
     state = {
         "category": "all",
-        "tags": set(),
+        "search": "",
         "selected": None,
         "sort_desc": True,
     }
 
-    ui.label("Archives GED").classes("text-h5 q-mb-sm")
-    ui.label("Recherchez vos documents classés par mot-clé, tag ou date.").classes(
-        "text-body2 text-grey-7 q-mb-md"
+    ui.label("Archives GED").classes("text-h5 q-mb-xs")
+    ui.label("Recherchez vos documents par mot-clé, tag ou date.").classes(
+        "text-body2 text-grey-7 q-mb-sm"
     )
 
-    with ui.row().classes("w-full q-col-gutter-sm q-mb-sm items-end"):
-        search_input = ui.input(
-            placeholder="Rechercher (titre, contenu, fichier, tags)…",
-        ).props("clearable outlined dense").classes("col-grow")
-        sort_toggle = ui.button(icon="arrow_downward").props("flat round dense").tooltip(
-            "Tri par date d'émission"
-        )
+    search_filter_container = ui.column().classes("w-full q-mb-xs")
+    tag_suggestions_row = ui.row().classes(
+        "w-full q-gutter-xs q-pl-md q-mb-xs flex-wrap items-center"
+    )
+
+    with search_filter_container:
+        with ui.row().classes("w-full items-center q-gutter-sm flex-wrap"):
+            with ui.row().classes(
+                "col-grow items-center q-gutter-xs trankil-omnibox-wrap"
+            ).style("min-width: 220px"):
+                ui.icon("search", size="sm").classes("text-grey-6 shrink-0")
+                search_input = ui.input(
+                    placeholder="Rechercher une tâche ou un tag…",
+                ).props("dense borderless clearable").classes("col-grow").style(
+                    "min-width: 0"
+                )
+            sort_toggle = ui.button(icon="arrow_downward").props(
+                "flat round dense"
+            ).classes("trankil-view-toggle shrink-0").tooltip("Tri par date d'émission")
+            category_filter_row = ui.row().classes(
+                "items-center q-gutter-sm shrink-0"
+            )
 
     with ui.row().classes("w-full q-col-gutter-sm q-mb-sm items-end"):
         date_from_input = ui.input("Du").props("type=date outlined dense").classes("col")
         date_to_input = ui.input("Au").props("type=date outlined dense").classes("col")
-        ui.button("Rechercher", icon="search", on_click=lambda: render_results.refresh()).props(
-            "color=primary unelevated"
-        )
 
-    category_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-sm")
-    tag_chip_container = ui.row().classes("w-full q-gutter-xs q-mb-sm flex-wrap")
     results_label = ui.label("").classes("text-caption text-grey-7 q-mb-sm")
 
     with ui.row().classes("w-full q-col-gutter-md no-wrap"):
@@ -57,6 +68,18 @@ def create_ged_view():
             "min-width: 38%; max-width: 42%; max-height: 70vh; overflow-y: auto;"
         )
         preview_container = ui.column().classes("col-grow").style("min-width: 55%")
+
+    def refresh_search_results() -> None:
+        state["search"] = (search_input.value or "").strip()
+        render_tag_suggestions.refresh()
+        render_results.refresh()
+
+    def on_search_change(_=None) -> None:
+        refresh_search_results()
+
+    search_input.on("update:model-value", on_search_change)
+    date_from_input.on("update:model-value", refresh_search_results)
+    date_to_input.on("update:model-value", refresh_search_results)
 
     def show_preview(item: ArchiveItem) -> None:
         state["selected"] = item
@@ -122,9 +145,9 @@ def create_ged_view():
 
     @ui.refreshable
     def render_category_filters() -> None:
-        category_row.clear()
-        with category_row:
-            ui.label("Catégorie :").classes("text-subtitle2")
+        category_filter_row.clear()
+        with category_filter_row:
+            ui.label("Filtrer").classes("text-subtitle2 text-grey-7 q-mr-xs")
             for key, label in CATEGORY_OPTIONS.items():
 
                 def set_cat(k: str = key) -> None:
@@ -133,49 +156,49 @@ def create_ged_view():
                     render_results.refresh()
 
                 ui.button(label, on_click=set_cat).props(
-                    "dense"
-                    + (
-                        " color=primary unelevated"
-                        if state["category"] == key
-                        else " outline"
-                    )
-                )
+                    "flat unelevated no-caps"
+                ).classes(chip_classes(key, state["category"]))
 
     @ui.refreshable
-    def render_tag_filters() -> None:
-        tag_chip_container.clear()
-        tags = list_all_tags()
-        with tag_chip_container:
-            if not tags:
-                return
-            for tag in tags:
-                selected = tag.lower() in state["tags"]
+    def render_tag_suggestions() -> None:
+        tag_suggestions_row.clear()
+        query = state["search"]
+        if "#" not in query:
+            return
 
-                def toggle(t: str = tag) -> None:
-                    key = t.lower()
-                    if key in state["tags"]:
-                        state["tags"].remove(key)
-                    else:
-                        state["tags"].add(key)
-                    render_tag_filters.refresh()
+        hash_idx = query.rfind("#")
+        prefix = query[hash_idx + 1 :]
+        matches = suggest_tags(prefix, list_all_tags())
+        if not matches:
+            return
+
+        with tag_suggestions_row:
+            for tag in matches:
+
+                def select_tag(t: str = tag) -> None:
+                    state["search"] = f"#{t}"
+                    search_input.value = state["search"]
+                    render_tag_suggestions.refresh()
                     render_results.refresh()
 
-                ui.button(f"#{tag}", on_click=toggle).props(
-                    "dense rounded" + (" color=primary" if selected else " outline")
-                )
+                ui.button(f"#{tag}", on_click=select_tag).props(
+                    "flat unelevated no-caps"
+                ).classes("trankil-tag-suggestion")
 
     @ui.refreshable
     def render_results() -> None:
         items = search_archives(
-            query=search_input.value or "",
+            query=state["search"],
             category_filter=state["category"],
-            tag_filters=list(state["tags"]) if state["tags"] else None,
             date_from=parse_optional_date(date_from_input.value),
             date_to=parse_optional_date(date_to_input.value),
             sort_desc=state["sort_desc"],
         )
 
-        results_label.text = f"{len(items)} document{'s' if len(items) != 1 else ''} trouvé{'s' if len(items) != 1 else ''}"
+        results_label.text = (
+            f"{len(items)} document{'s' if len(items) != 1 else ''} "
+            f"trouvé{'s' if len(items) != 1 else ''}"
+        )
         results_container.clear()
 
         with results_container:
@@ -206,11 +229,9 @@ def create_ged_view():
                         ui.label(item.title).classes("text-subtitle2 col ellipsis")
                         if not item.file_exists:
                             ui.badge("Manquant").props("color=red")
-                    ui.label(format_date_fr(item.date_emission)).classes("text-caption text-grey-7")
-                    if item.tags:
-                        ui.label(" ".join(f"#{t}" for t in item.tags)).classes(
-                            "text-caption text-grey-8"
-                        )
+                    ui.label(format_date_fr(item.date_emission)).classes(
+                        "text-caption text-grey-7"
+                    )
 
             if not still_visible and items:
                 show_preview(items[0])
@@ -227,15 +248,15 @@ def create_ged_view():
         render_results.refresh()
 
     sort_toggle.on_click(toggle_sort)
-    search_input.on("keydown.enter", render_results.refresh)
 
     render_category_filters()
-    render_tag_filters()
+    render_tag_suggestions()
     render_results()
 
     def refresh_ged() -> None:
+        state["search"] = (search_input.value or "").strip()
         render_category_filters.refresh()
-        render_tag_filters.refresh()
+        render_tag_suggestions.refresh()
         render_results.refresh()
 
     register_tab_refresh("ged", refresh_ged)

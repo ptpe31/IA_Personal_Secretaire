@@ -44,7 +44,7 @@ IA_PROVIDER_OPTIONS: tuple[str, ...] = (IA_PROVIDER_GEMINI, IA_PROVIDER_OPENROUT
 
 # NiceGUI
 APP_PORT: int = 8080
-APP_TITLE: str = "Trankil-v2"
+APP_TITLE: str = "IA-Secretaire"
 
 # Email SMTP (relances J-1) — surchargeables via ~/Trankil-v2/config.yaml et .env
 DEFAULT_SMTP_SERVER: str = "smtp.gmail.com"

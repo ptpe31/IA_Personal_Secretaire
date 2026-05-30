@@ -98,9 +98,9 @@ def main() -> None:
     try:
         initialize_app_data()
         start_notification_scheduler()
-        logger.info("Trankil-v2 initialisé — dossiers et base SQLite prêts.")
+        logger.info("%s initialisé — dossiers et base SQLite prêts.", APP_TITLE)
     except Exception:
-        logger.exception("Échec initialisation Trankil-v2")
+        logger.exception("Échec initialisation %s", APP_TITLE)
         sys.exit(1)
 
     ui.page_title(APP_TITLE)

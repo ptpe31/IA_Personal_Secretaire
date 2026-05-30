@@ -15,8 +15,11 @@ from app.services.task_service import (
     archive_task,
     delete_task,
     delete_tasks,
+    list_all_tags,
     list_tasks,
+    matches_task_search,
     refresh_task_statuses,
+    suggest_tags,
 )
 from app.ui.calendar_button import add_calendar_sync_button
 from app.ui.document_upload import create_document_intake
@@ -78,7 +81,7 @@ CATEGORY_OPTIONS = {
 def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     """Construit la page d'accueil : dépôt en haut, Kanban en bas."""
     queue = get_inbox_queue()
-    state = {"category": "all"}
+    state = {"category": "all", "search": ""}
 
     ui.label("Tableau de bord").classes("text-h5 text-weight-medium text-grey-9 q-mb-xs")
     ui.label(
@@ -106,10 +109,28 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
     manual_banner_container = ui.column().classes("w-full q-mb-sm")
 
-    ui.separator().classes("q-my-md")
+    ui.separator().classes("q-my-sm")
 
-    filter_row = ui.row().classes("w-full items-center q-gutter-sm q-mb-sm")
+    search_filter_container = ui.column().classes("w-full q-mb-xs")
+    tag_suggestions_row = ui.row().classes(
+        "w-full q-gutter-xs q-pl-md q-mb-xs flex-wrap items-center"
+    )
     tasks_workspace_container = ui.column().classes("w-full")
+
+    with search_filter_container:
+        with ui.row().classes("w-full items-center q-gutter-sm flex-wrap"):
+            with ui.row().classes(
+                "col-grow items-center q-gutter-xs trankil-omnibox-wrap"
+            ).style("min-width: 220px"):
+                ui.icon("search", size="sm").classes("text-grey-6 shrink-0")
+                search_input = ui.input(
+                    placeholder="Rechercher une tâche ou un tag…",
+                ).props("dense borderless clearable").classes("col-grow").style(
+                    "min-width: 0"
+                )
+            category_filter_row = ui.row().classes(
+                "items-center q-gutter-sm shrink-0"
+            )
 
     @ui.refreshable
     def render_processing_status() -> None:
@@ -183,11 +204,18 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                             on_click=go_inbox,
                         ).props("flat dense no-caps color=blue-7")
 
+    def on_search_change(_=None) -> None:
+        state["search"] = (search_input.value or "").strip()
+        render_tag_suggestions.refresh()
+        render_tasks_workspace.refresh()
+
+    search_input.on("update:model-value", on_search_change)
+
     @ui.refreshable
     def render_category_filters() -> None:
-        filter_row.clear()
-        with filter_row:
-            ui.label("Filtrer").classes("text-subtitle2 text-grey-7 q-mr-sm")
+        category_filter_row.clear()
+        with category_filter_row:
+            ui.label("Filtrer").classes("text-subtitle2 text-grey-7 q-mr-xs")
             for key, label in CATEGORY_OPTIONS.items():
 
                 def set_category(k: str = key) -> None:
@@ -201,6 +229,32 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
                 ).props("flat unelevated no-caps").classes(
                     chip_classes(key, state["category"])
                 )
+
+    @ui.refreshable
+    def render_tag_suggestions() -> None:
+        tag_suggestions_row.clear()
+        query = state["search"]
+        if "#" not in query:
+            return
+
+        hash_idx = query.rfind("#")
+        prefix = query[hash_idx + 1 :]
+        matches = suggest_tags(prefix, list_all_tags())
+        if not matches:
+            return
+
+        with tag_suggestions_row:
+            for tag in matches:
+
+                def select_tag(t: str = tag) -> None:
+                    state["search"] = f"#{t}"
+                    search_input.value = state["search"]
+                    render_tag_suggestions.refresh()
+                    render_tasks_workspace.refresh()
+
+                ui.button(f"#{tag}", on_click=select_tag).props(
+                    "flat unelevated no-caps"
+                ).classes("trankil-tag-suggestion")
 
     def confirm_delete_task(task: TaskDTO) -> None:
         with ui.dialog() as dialog, ui.card().classes("q-pa-md"):
@@ -537,6 +591,9 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     def _load_task_buckets() -> dict[str, list[TaskDTO]]:
         refresh_task_statuses()
         tasks = list_tasks(category_filter=state["category"])
+        search_q = state["search"]
+        if search_q:
+            tasks = [t for t in tasks if matches_task_search(search_q, t)]
         buckets: dict[str, list[TaskDTO]] = {
             "urgent": [],
             "todo": [],
@@ -611,7 +668,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
 
         tasks_workspace_container.clear()
         with tasks_workspace_container:
-            with ui.row().classes("w-full items-center q-gutter-xs q-mb-md"):
+            with ui.row().classes("w-full items-center q-gutter-xs q-mb-sm"):
                 ui.label("Vue").classes("text-subtitle2 text-grey-7 q-mr-sm")
                 ui.button(
                     icon="view_kanban",
@@ -636,6 +693,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
         render_processing_status.refresh()
         render_manual_banner.refresh()
         render_category_filters.refresh()
+        render_tag_suggestions.refresh()
         render_tasks_workspace.refresh()
 
     def _detach_queue_listener() -> None:
@@ -672,6 +730,7 @@ def create_dashboard_view(*, switch_to_inbox: Callable[[], None] | None = None):
     render_processing_status()
     render_manual_banner()
     render_category_filters()
+    render_tag_suggestions()
     render_tasks_workspace()
 
     register_tab_refresh("dashboard", refresh_dashboard)

@@ -47,6 +47,25 @@ def test_matches_tags():
     )
 
 
+def test_matches_hash_tag():
+    assert matches_search_query(
+        query="#urssaf",
+        title="Déclaration",
+        raw_summary="",
+        stored_path="x.pdf",
+        original_filename="x.pdf",
+        tags=["Compta", "URSSAF"],
+    )
+    assert matches_search_query(
+        query="#UR",
+        title="Déclaration",
+        raw_summary="",
+        stored_path="x.pdf",
+        original_filename="x.pdf",
+        tags=["Compta", "URSSAF"],
+    )
+
+
 def test_no_match():
     assert not matches_search_query(
         query="firebase",

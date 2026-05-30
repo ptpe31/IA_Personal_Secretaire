@@ -367,6 +367,31 @@ def list_all_tags() -> list[str]:
         conn.close()
 
 
+def matches_task_search(query: str, task: TaskDTO) -> bool:
+    """Filtre dashboard : titre et tags (insensible à la casse)."""
+    needle = query.strip().lower()
+    if not needle:
+        return True
+
+    if needle.startswith("#"):
+        tag_needle = needle.lstrip("#")
+        if not tag_needle:
+            return bool(task.tags)
+        return any(tag_needle in tag.lower() for tag in task.tags)
+
+    if needle in task.title.lower():
+        return True
+    return any(needle in tag.lower() for tag in task.tags)
+
+
+def suggest_tags(prefix: str, all_tags: list[str], *, limit: int = 8) -> list[str]:
+    """Suggestions type-ahead pour l'omnibox (#tag)."""
+    cleaned = prefix.strip().lstrip("#").lower()
+    if not cleaned:
+        return all_tags[:limit]
+    return [tag for tag in all_tags if cleaned in tag.lower()][:limit]
+
+
 def create_manual_task(
     *,
     title: str,
