@@ -1,222 +1,293 @@
-"""Automatisation Leclerc Drive — Playwright async avec session persistante."""
+"""Automatisation Leclerc Drive — bypass fiche produit + apprentissage par URL."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
-import re
 import subprocess
 from collections.abc import Callable
 from typing import Any
 
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import BrowserContext, Page, async_playwright
 
 from app.config import LECLERC_PROFILE_PATH
-from app.models.drive import CourseItem
-from app.services.drive_mapping_service import get_mapping, remove_entry, save_mapping_entry
+from app.models.drive import DEFAULT_DRIVE_PLATFORM, DriveShoppingItem, determiner_nb_clics
+from app.services.drive_base_driver import BaseDriveDriver
+from app.services.drive_mapping_service import (
+    ensure_plus_url,
+    get_store_mapping,
+    is_leclerc_product_fiche,
+    normalize_product_url,
+    save_mapping_entry,
+)
 
 logger = logging.getLogger(__name__)
 
-LECLERC_HOME_URL = "https://www.leclercdrive.fr/"
-CART_URL_PATTERNS = ("/ajout/", "/panier/", "addToCart", "ajouter")
+LECLERC_STORE_URL = (
+    "https://fd4-courses.leclercdrive.fr/"
+    "magasin-103101-103101-Roques-sur-Garonne-Toulouse.aspx"
+)
 
-_PRODUCT_ID_URL_RE = re.compile(r"/(?:ajout|produit|product)/(\d+)", re.I)
-_PRODUCT_ID_QUERY_RE = re.compile(r"[?&](?:productId|id|codeArticle)=(\d+)", re.I)
-_BODY_ID_KEYS = ("id", "productId", "codeArticle", "product_id", "codeProduit")
-
-
-def _parse_cart_payload(request: Any, page_url: str) -> dict[str, str]:
-    """Extrait product_id et product_url depuis l'interception réseau Leclerc."""
-    captured: dict[str, str] = {"product_url": page_url}
-    url_str = request.url or ""
-
-    for pattern in (_PRODUCT_ID_URL_RE, _PRODUCT_ID_QUERY_RE):
-        match = pattern.search(url_str)
-        if match:
-            captured["product_id"] = match.group(1)
-            break
-
-    try:
-        body = request.post_data_json
-        if isinstance(body, dict):
-            for key in _BODY_ID_KEYS:
-                if key in body and body[key]:
-                    captured["product_id"] = str(body[key])
-                    break
-    except Exception:
-        pass
-
-    if "product_id" not in captured:
-        raise ValueError(f"Impossible d'extraire product_id depuis {url_str}")
-    return captured
+_FICHE_PRODUIT_ROOT = "#divWCRS388_FicheProduit, section.fiche-produit, .WCRS388_FicheProduit"
 
 
-def is_product_page_valid(page_url: str, product_id: str | None) -> bool:
-    """Vérifie que l'URL finale contient encore l'identifiant produit."""
-    if not product_id:
-        return False
-    return product_id in page_url
-
-
-class LeclercDriver:
+class LeclercDriver(BaseDriveDriver):
     """Robot courses Leclerc Drive — cycle de vie Playwright entièrement dans run()."""
+
+    platform_id = DEFAULT_DRIVE_PLATFORM
 
     def __init__(
         self,
         on_status: Callable[[str], None],
         on_failures: Callable[[list[str]], None],
+        on_learned: Callable[[str, str], None] | None = None,
     ) -> None:
-        self.on_status = on_status
-        self.on_failures = on_failures
-        self.resume_event = asyncio.Event()
-        self.skip_learning_event = asyncio.Event()
-        self.learning_done = asyncio.Event()
+        super().__init__(on_status, on_failures, on_learned)
         self._produits_a_valider: list[str] = []
-        self._current_mot_cle: str | None = None
+        self._context: BrowserContext | None = None
 
-    async def run(self, items: list[CourseItem]) -> None:
+    async def run(self, items: list[DriveShoppingItem]) -> None:
+        self.resume_event.clear()
         async with async_playwright() as playwright:
             LECLERC_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
             context = await playwright.chromium.launch_persistent_context(
                 str(LECLERC_PROFILE_PATH),
                 headless=False,
+                viewport={"width": 1400, "height": 900},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                 ],
             )
+            self._context = context
             page = context.pages[0] if context.pages else await context.new_page()
             try:
                 await self._phase_login(page)
                 await self._phase_shopping(page, items)
-                await self._phase_learning(page)
+                await self._phase_learning(page, items)
+                self.on_status(
+                    "[LeclercBot] Terminé — navigateur laissé ouvert pour vérifier le panier."
+                )
+            except asyncio.CancelledError:
+                self.on_status(
+                    "[LeclercBot] Interrompu — navigateur laissé ouvert."
+                )
+                raise
             finally:
-                await context.close()
-
-    async def signal_resume(self) -> None:
-        self.resume_event.set()
-
-    async def signal_skip_learning(self) -> None:
-        self.skip_learning_event.set()
-        self.learning_done.set()
-
-    async def _human_delay(self) -> None:
-        await asyncio.sleep(random.uniform(1.5, 3.5))
+                self._context = None
 
     async def _phase_login(self, page: Page) -> None:
-        self.on_status("Ouverture Leclerc Drive — connectez-vous et choisissez votre magasin.")
-        await page.goto(LECLERC_HOME_URL, wait_until="domcontentloaded")
-        self.resume_event.clear()
-        self.on_status("En attente : cliquez sur [▶️ Démarrer les courses] une fois connecté.")
+        self.on_status(
+            "Ouverture Leclerc Drive (Roques-sur-Garonne) — connectez-vous si nécessaire."
+        )
+        await page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
+        self.on_status("En attente : cliquez sur [▶️ Démarrer les courses] une fois prêt.")
         await self.resume_event.wait()
         self.on_status("[LeclercBot] Session reprise — début des courses.")
 
-    async def _phase_shopping(self, page: Page, items: list[CourseItem]) -> None:
+    async def _phase_shopping(self, page: Page, items: list[DriveShoppingItem]) -> None:
         self._produits_a_valider = []
         for item in items:
-            success = await self._shop_item(page, item)
+            if not item.product_url:
+                self._produits_a_valider.append(item.mot_cle)
+                self.on_status(f"[LeclercBot] URL absente — report : {item.mot_cle}")
+                continue
+            if item.nb_paquets <= 0:
+                self.on_status(
+                    f"[LeclercBot] Contenance non renseignée — pas d'ajout : {item.mot_cle}"
+                )
+                continue
+            success = await self._add_via_product_url(page, item)
             if not success:
                 self._produits_a_valider.append(item.mot_cle)
 
-    async def _shop_item(self, page: Page, item: CourseItem) -> bool:
-        mot_cle = item.mot_cle
-        mapping = get_mapping(mot_cle)
-        if mapping and mapping.get("product_url"):
-            if await self._try_bypass(page, item, mapping):
-                return True
-        return await self._search_and_add(page, item)
+    async def _product_fiche_root(self, page: Page):
+        fiche = page.locator(_FICHE_PRODUIT_ROOT).first
+        if await fiche.count() and await fiche.is_visible():
+            return fiche
+        return page.locator("body")
 
-    async def _try_bypass(self, page: Page, item: CourseItem, mapping: dict) -> bool:
-        mot_cle = item.mot_cle
-        product_url = mapping.get("product_url", "")
-        product_id = mapping.get("product_id")
-        self.on_status(f"[LeclercBot] Bypass URL : {mot_cle}")
-        await self._human_delay()
+    async def _visible_add_zone(self, page: Page):
+        """Zone d'ajout panier sur la fiche produit (pas le mini-panier header)."""
+        fiche = await self._product_fiche_root(page)
+        locators = (
+            page.locator(".js-prix-ajout .conteneur-ajout"),
+            fiche.locator(".conteneur-ajout"),
+            page.locator(".fiche-produit .conteneur-ajout"),
+        )
+        for scoped in locators:
+            count = await scoped.count()
+            for idx in range(count):
+                zone = scoped.nth(idx)
+                if not await zone.is_visible():
+                    continue
+                if await zone.locator(
+                    "button, a, [role='button'], .icon-plus, [class*='plus']"
+                ).count():
+                    return zone
+        raise RuntimeError("Zone d'ajout panier (.conteneur-ajout) introuvable ou masquée")
+
+    async def _wait_for_product_fiche(self, page: Page) -> None:
+        await page.wait_for_load_state("domcontentloaded")
+        blocked = page.get_by_text("Access is temporarily restricted", exact=False)
+        if await blocked.count() and await blocked.first.is_visible():
+            raise RuntimeError(
+                "Leclerc a bloqué la session (anti-bot). Reconnectez-vous manuellement."
+            )
+        fiche = page.locator(_FICHE_PRODUIT_ROOT).first
         try:
-            await page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+            await fiche.wait_for(state="visible", timeout=20000)
         except Exception as exc:
-            logger.warning("[LeclercBot] goto bypass échoué %s : %s", mot_cle, exc)
-            remove_entry(mot_cle)
+            raise RuntimeError("Fiche produit Leclerc introuvable sur la page") from exc
+        await self._visible_add_zone(page)
+        await page.wait_for_timeout(int(random.uniform(800, 1500)))
+
+    def _locate_add_controls(self, zone):
+        btn_ajouter = (
+            zone.get_by_role("button", name="Ajouter au panier")
+            .or_(zone.get_by_role("link", name="Ajouter au panier"))
+            .or_(zone.get_by_text("Ajouter au panier", exact=True))
+            .or_(zone.locator("a:has-text('Ajouter au panier'), button:has-text('Ajouter au panier')"))
+            .or_(zone.locator("[class*='ajout'][class*='panier'], [id*='AjoutPanier']"))
+            .first
+        )
+        btn_plus = (
+            zone.locator(
+                "[class*='compteur'] button:last-child, [class*='Compteur'] button:last-child, "
+                "[class*='quantite'] button:last-child, [class*='Quantite'] button:last-child"
+            )
+            .or_(zone.locator(".icon-plus, [class*='icon-plus'], [class*='IconPlus']"))
+            .or_(zone.locator("button[aria-label*='Augmenter'], button[aria-label*='augmenter']"))
+            .or_(zone.locator("a[aria-label*='Augmenter'], a[aria-label*='augmenter']"))
+            .or_(zone.locator("button:has-text('+'), a:has-text('+')"))
+            .first
+        )
+        return btn_ajouter, btn_plus
+
+    async def _pick_add_control(self, zone, *, unit: int):
+        """1er paquet → Ajouter au panier ; suivants → bouton +."""
+        btn_ajouter, btn_plus = self._locate_add_controls(zone)
+        if unit > 1:
+            if await btn_plus.is_visible(timeout=3000):
+                return btn_plus, "bouton '+'"
+            if await btn_ajouter.is_visible(timeout=2000):
+                return btn_ajouter, "'Ajouter au panier' (repli)"
+            raise RuntimeError("Bouton '+' introuvable pour incrémenter la quantité")
+        if await btn_ajouter.is_visible(timeout=3000):
+            return btn_ajouter, "'Ajouter au panier'"
+        if await btn_plus.is_visible(timeout=3000):
+            return btn_plus, "bouton '+'"
+        raise RuntimeError("Aucun bouton d'ajout au panier trouvé à l'écran")
+
+    async def _click_add_once(self, page: Page, mot_cle: str, unit: int, total: int) -> None:
+        zone = await self._visible_add_zone(page)
+        control, label = await self._pick_add_control(zone, unit=unit)
+        await self._click_add_control(page, control, label, mot_cle, unit, total)
+
+    async def _click_add_control(
+        self, page: Page, control, label: str, mot_cle: str, unit: int, total: int
+    ) -> None:
+        self.on_status(
+            f"[LeclercBot] Clic sur {label} (Unité {unit}/{total}) : {mot_cle}"
+        )
+        await control.scroll_into_view_if_needed()
+        await control.click(timeout=8000)
+        await page.wait_for_timeout(int(random.uniform(1800, 3000)))
+
+    async def _add_via_product_url(self, page: Page, item: DriveShoppingItem) -> bool:
+        mot_cle = item.mot_cle
+        base_url = normalize_product_url(item.product_url or "")
+        if not base_url:
             return False
 
-        if not is_product_page_valid(page.url, str(product_id) if product_id else None):
-            logger.warning("[LeclercBot] URL mapping expirée pour « %s » — fallback recherche", mot_cle)
-            remove_entry(mot_cle)
-            return False
-
-        add_btn = page.locator("button[aria-label*='Ajouter'], button:has-text('+')").first
+        self.on_status(f"[LeclercBot] Chargement de la fiche produit : {base_url}")
         try:
-            if not await add_btn.is_visible(timeout=5000):
-                remove_entry(mot_cle)
-                return False
-        except Exception:
-            remove_entry(mot_cle)
+            await page.goto(base_url, wait_until="load", timeout=30000)
+            await self._wait_for_product_fiche(page)
+        except Exception as exc:
+            logger.warning("[LeclercBot] goto fiche échoué %s : %s", mot_cle, exc)
+            self.on_status(f"[LeclercBot] Fiche inaccessible — report : {mot_cle}")
             return False
 
-        for _ in range(item.quantite):
-            await self._human_delay()
-            await add_btn.click()
-        self.on_status(f"[LeclercBot] Article ajouté (bypass) : {mot_cle}")
+        for i in range(item.nb_paquets):
+            unit = i + 1
+            added = await self._add_one_paquet(page, mot_cle, base_url, unit, item.nb_paquets)
+            if not added:
+                return False
+
+        self.on_status(f"[LeclercBot] Article ajouté (× {item.nb_paquets} paquet(s)) : {mot_cle}")
         return True
 
-    async def _search_and_add(self, page: Page, item: CourseItem) -> bool:
-        mot_cle = item.mot_cle
-        self.on_status(f"[LeclercBot] Recherche : {mot_cle}…")
-        await self._human_delay()
+    async def _add_one_paquet(
+        self, page: Page, mot_cle: str, base_url: str, unit: int, total: int
+    ) -> bool:
+        """1er paquet : fragment #plus Leclerc ; suivants : bouton + ou #plus en repli."""
+        if unit == 1:
+            try:
+                await page.goto(ensure_plus_url(base_url), wait_until="load", timeout=30000)
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(int(random.uniform(1800, 3000)))
+                self.on_status(
+                    f"[LeclercBot] Ajout via #plus (Unité {unit}/{total}) : {mot_cle}"
+                )
+                return True
+            except Exception as exc:
+                logger.warning("[LeclercBot] #plus échoué %s unité 1 : %s", mot_cle, exc)
 
-        search = page.locator(
-            "input[type='search'], input[placeholder*='Recherch'], input[name='Rechercher']"
-        ).first
         try:
-            await search.wait_for(state="visible", timeout=10000)
-            await search.click()
-            await search.fill("")
-            await search.press_sequentially(mot_cle, delay=80)
-            await search.press("Enter")
+            await self._click_add_once(page, mot_cle, unit, total)
+            return True
         except Exception as exc:
-            logger.warning("[LeclercBot] Recherche impossible pour %s : %s", mot_cle, exc)
+            logger.warning(
+                "[LeclercBot] Clic DOM échoué %s unité %s/%s : %s",
+                mot_cle,
+                unit,
+                total,
+                exc,
+            )
+
+        try:
+            await page.goto(ensure_plus_url(base_url), wait_until="load", timeout=30000)
+            await page.wait_for_timeout(int(random.uniform(1800, 3000)))
+            self.on_status(
+                f"[LeclercBot] Ajout via #plus repli (Unité {unit}/{total}) : {mot_cle}"
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[LeclercBot] Échec d'ajout pour %s à l'unité %s/%s : %s",
+                mot_cle,
+                unit,
+                total,
+                exc,
+            )
+            self.on_status(
+                f"[LeclercBot] Échec d'ajout pour {mot_cle} à l'unité {unit} : {exc}"
+            )
             return False
 
-        await self._human_delay()
-        await self._apply_marque_repere(page)
-        await asyncio.sleep(2)
+    def _item_from_mapping(self, item: DriveShoppingItem) -> DriveShoppingItem | None:
+        """Reconstruit l'article avec URL/contenance mémorisées pour un nouvel essai d'ajout."""
+        mapping = get_store_mapping(item.mot_cle, self.platform_id) or {}
+        url = normalize_product_url(mapping.get("product_url") or "") or None
+        if not url:
+            return None
+        contenance = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+        if not contenance or float(contenance) <= 0:
+            return None
+        unite = mapping.get("unite_paquet") or item.unite_recette
+        preview: dict[str, Any] = {
+            **mapping,
+            "contenance_paquet": float(contenance),
+            "unite_paquet": unite,
+        }
+        nb_paquets = determiner_nb_clics(item, preview)
+        if nb_paquets <= 0:
+            return None
+        return item.model_copy(update={"product_url": url, "nb_paquets": nb_paquets})
 
-        cards = page.locator("[data-test='product-card'], .product-card, article.product")
-        count = await cards.count()
-        if count == 0:
-            cards = page.locator(".col-product, li.product")
-            count = await cards.count()
-
-        for idx in range(count):
-            card = cards.nth(idx)
-            text = (await card.inner_text()).lower()
-            if "bientôt disponible" in text or "produits similaires" in text:
-                continue
-            add_btn = card.locator("button[aria-label*='Ajouter'], button:has-text('+')").first
-            try:
-                if await add_btn.is_visible(timeout=2000):
-                    for _ in range(item.quantite):
-                        await self._human_delay()
-                        await add_btn.click()
-                    self.on_status(f"[LeclercBot] Article ajouté au panier : {mot_cle}")
-                    return True
-            except Exception:
-                continue
-
-        self.on_status(f"[LeclercBot] Aucun produit disponible pour : {mot_cle}")
-        return False
-
-    async def _apply_marque_repere(self, page: Page) -> None:
-        try:
-            checkbox = page.get_by_role("checkbox", name="Marque Repère")
-            if await checkbox.is_visible(timeout=3000):
-                await checkbox.check()
-                self.on_status("[LeclercBot] Filtre Marque Repère appliqué.")
-        except Exception:
-            logger.debug("[LeclercBot] Filtre Marque Repère non trouvé.")
-
-    async def _phase_learning(self, page: Page) -> None:
+    async def _phase_learning(self, page: Page, items: list[DriveShoppingItem]) -> None:
         if not self._produits_a_valider:
             self.on_status("[LeclercBot] Courses terminées — panier complet.")
             return
@@ -227,73 +298,73 @@ class LeclercDriver:
             check=False,
         )
         self.on_failures(list(self._produits_a_valider))
-        self.on_status(f"[LeclercBot] {len(self._produits_a_valider)} produit(s) à valider manuellement.")
+        self.on_status(
+            f"[LeclercBot] {len(self._produits_a_valider)} produit(s) à compléter — "
+            "ouvrez la fiche produit ou collez l'URL dans le tableau."
+        )
 
-        for mot_cle in self._produits_a_valider:
+        items_by_mot = {i.mot_cle.strip().lower(): i for i in items}
+        pending = list(self._produits_a_valider)
+        for mot_cle in pending:
             memorized = await self._phase_learning_item(page, mot_cle)
-            if memorized:
-                self.on_status(f"[LeclercBot] Produit mémorisé : {mot_cle}")
+            if not memorized:
+                continue
+            self.on_status(f"[LeclercBot] Produit mémorisé : {mot_cle}")
+            source = items_by_mot.get(mot_cle.strip().lower())
+            if source is None:
+                continue
+            retry_item = self._item_from_mapping(source)
+            if retry_item is None:
+                self.on_status(
+                    f"[LeclercBot] Lien OK — renseignez « Cont. 1 pqt » puis relancez : {mot_cle}"
+                )
+                continue
+            added = await self._add_via_product_url(page, retry_item)
+            if added:
+                self.on_status(f"[LeclercBot] Ajout réussi après mémorisation : {mot_cle}")
 
         self.on_status("[LeclercBot] Phase apprentissage terminée.")
 
     async def _phase_learning_item(self, page: Page, mot_cle: str) -> bool:
+        """Attend que l'utilisateur ouvre une fiche produit manuellement (sans recherche auto)."""
         self.learning_done = asyncio.Event()
         self.skip_learning_event.clear()
-        self._current_mot_cle = mot_cle
-        captured: dict[str, str] = {}
+        captured_url: str | None = None
 
-        def on_request(request: Any) -> None:
-            try:
-                if request.method not in ("POST", "PUT"):
-                    return
-                if not any(p in request.url for p in CART_URL_PATTERNS):
-                    return
-                captured.update(_parse_cart_payload(request, page.url))
+        def on_frame_navigated(frame) -> None:
+            nonlocal captured_url
+            if frame != page.main_frame:
+                return
+            current = page.url
+            if is_leclerc_product_fiche(current):
+                captured_url = normalize_product_url(current)
                 self.learning_done.set()
-            except Exception as exc:
-                logger.warning(
-                    "[LeclercBot] Requête panier ignorée (%s): %s",
-                    getattr(request, "url", "?"),
-                    exc,
-                )
 
-        page.on("request", on_request)
+        page.on("framenavigated", on_frame_navigated)
         try:
-            await self._search_keyword_only(page, mot_cle)
             self.on_status(
-                f"Cliquez sur + dans Leclerc pour « {mot_cle} », ou [Passer ce produit]"
+                f"Ouvrez la fiche produit sur Leclerc pour « {mot_cle} », "
+                "ou collez l'URL dans le tableau, ou [Passer ce produit]"
             )
 
             skip_task = asyncio.create_task(self.skip_learning_event.wait())
             learn_task = asyncio.create_task(self.learning_done.wait())
-            done, pending = await asyncio.wait(
+            _done, pending = await asyncio.wait(
                 {skip_task, learn_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
         finally:
-            page.remove_listener("request", on_request)
+            page.remove_listener("framenavigated", on_frame_navigated)
 
-        if captured:
+        if captured_url:
             save_mapping_entry(
                 mot_cle,
+                platform=self.platform_id,
                 product_name=mot_cle,
-                product_url=captured.get("product_url"),
-                product_id=captured.get("product_id"),
+                product_url=captured_url,
             )
+            self.on_learned(mot_cle, captured_url)
             return True
         return False
-
-    async def _search_keyword_only(self, page: Page, mot_cle: str) -> None:
-        search = page.locator(
-            "input[type='search'], input[placeholder*='Recherch'], input[name='Rechercher']"
-        ).first
-        try:
-            await search.wait_for(state="visible", timeout=10000)
-            await search.click()
-            await search.fill("")
-            await search.press_sequentially(mot_cle, delay=80)
-            await search.press("Enter")
-        except Exception as exc:
-            logger.warning("[LeclercBot] Recherche apprentissage %s : %s", mot_cle, exc)

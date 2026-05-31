@@ -177,7 +177,7 @@ class OpenRouterClient(AnalysisClient):
                 raise ValueError("Réponse OpenRouter vide (Menu & Drive)")
             logger.info("[DRIVE-IA] OpenRouter — réponse OK (%s car.)", len(content))
             data = parse_json_content(content)
-            return finalize_drive_analysis(data)
+            return finalize_drive_analysis(data, input_plats=payload.plats)
         except Exception:
             logger.exception("[DRIVE-IA] OpenRouter — échec analyse menu")
             raise

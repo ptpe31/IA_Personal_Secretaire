@@ -6,10 +6,12 @@ import pytest
 
 from app.models.drive import (
     MEAL_PREFIXES,
-    REGIME_PREFIXES,
+    MEAL_SLOTS,
     CourseItem,
     DriveMenuAnalysisResult,
+    PlanningRepasItem,
     build_drive_menu_input,
+    parse_meal_slot,
 )
 from app.utils.dates import compute_menu_week_sunday
 
@@ -26,16 +28,37 @@ def test_compute_menu_week_sunday_from_saturday():
     assert compute_menu_week_sunday(date(2026, 6, 6)) == date(2026, 6, 7)
 
 
+def test_parse_prefixed_textarea_meals():
+    from app.models.drive import parse_prefixed_textarea
+
+    text = "Dimanche midi : pâtes\nLundi midi : "
+    values = parse_prefixed_textarea(text, MEAL_SLOTS, MEAL_PREFIXES)
+    assert values["Dimanche midi"] == "Dimanche midi : pâtes"
+    assert values["Lundi midi"] == "Lundi midi : "
+
+
+def test_parse_meal_slot():
+    assert parse_meal_slot("Mardi soir") == ("Mardi", "Soir")
+    assert parse_meal_slot("Dimanche midi") == ("Dimanche", "Midi")
+
+
+def test_parse_meal_slot_invalid():
+    with pytest.raises(ValueError):
+        parse_meal_slot("Mardi matin")
+
+
 def test_build_drive_menu_input_strips_empty_prefix():
     payload = build_drive_menu_input(
         {"Dimanche midi": "Dimanche midi : "},
         {"Lundi": "Lundi : "},
         "",
         4,
+        2,
     )
     assert payload.plats == {}
     assert payload.regime == {}
-    assert payload.nb_convives == 4
+    assert payload.nb_convives_enfants == 4
+    assert payload.nb_convives_regime == 2
 
 
 def test_build_drive_menu_input_keeps_filled_lines():
@@ -43,6 +66,7 @@ def test_build_drive_menu_input_keeps_filled_lines():
         {"Dimanche midi": "Dimanche midi : pâtes"},
         {"Lundi": "Lundi : sans lactose"},
         "essuie-tout",
+        4,
         4,
     )
     assert payload.plats["Dimanche midi"] == "pâtes"
@@ -56,20 +80,44 @@ def test_build_drive_menu_input_strips_trailing_spaces():
         {},
         "  ",
         0,
+        3,
     )
     assert payload.plats["Lundi midi"] == "quiche"
-    assert payload.nb_convives == 1
+    assert payload.nb_convives_enfants == 1
+    assert payload.nb_convives_regime == 3
 
 
 def test_course_item_rejects_invalid_rayon():
     with pytest.raises(Exception):
-        CourseItem(mot_cle="test", rayon="Boulangerie", quantite=1)
+        CourseItem(
+            mot_cle="test",
+            libelle="test",
+            rayon="Boulangerie",
+            quantite_recette=1,
+            unite_recette="u",
+        )
 
 
 def test_drive_menu_analysis_result_min_items():
-    html = "<!DOCTYPE html><html lang='fr'><body><p>x</p></body></html>"
     result = DriveMenuAnalysisResult(
-        planning_html=html,
-        liste_courses=[CourseItem(mot_cle="lait", rayon="Frais", quantite=1)],
+        planning_repas=[
+            PlanningRepasItem(
+                jour="Dimanche",
+                moment="Midi",
+                plat="Pâtes",
+                batch_cooking_dimanche="Cuire la sauce",
+                action_minute="Réchauffer",
+            )
+        ],
+        liste_courses=[
+            CourseItem(
+                mot_cle="lait",
+                libelle="lait entier",
+                rayon="Frais",
+                quantite_recette=2,
+                unite_recette="L",
+            )
+        ],
     )
     assert len(result.liste_courses) == 1
+    assert len(result.planning_repas) == 1

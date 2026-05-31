@@ -2,15 +2,48 @@
 
 from __future__ import annotations
 
+import html as html_module
+import math
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.utils.dates import compute_menu_week_sunday
 
 RayonType = Literal["Épicerie", "Frais", "Fruits & Légumes", "Bébé", "Entretien"]
+UniteMesureType = Literal["g", "kg", "ml", "L", "u"]
+DrivePlatformId = Literal["leclerc", "auchan", "carrefour"]
+PlanningJourType = Literal[
+    "Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"
+]
+PlanningMomentType = Literal["Midi", "Soir"]
+
+UNITE_MESURE_OPTIONS: list[UniteMesureType] = ["g", "kg", "ml", "L", "u"]
+
+DRIVE_PLATFORMS: dict[DrivePlatformId, dict[str, Any]] = {
+    "leclerc": {
+        "label": "Leclerc Drive",
+        "robot_label": "LANCER LE ROBOT LECLERC DRIVE",
+        "available": True,
+    },
+    "auchan": {
+        "label": "Auchan Drive (Bientôt)",
+        "robot_label": "LANCER LE ROBOT AUCHAN DRIVE",
+        "available": False,
+    },
+    "carrefour": {
+        "label": "Carrefour Drive (Bientôt)",
+        "robot_label": "LANCER LE ROBOT CARREFOUR DRIVE",
+        "available": False,
+    },
+}
+
+DEFAULT_DRIVE_PLATFORM: DrivePlatformId = "leclerc"
+DRIVE_PLATFORM_SELECT_OPTIONS: list[str] = [
+    cfg["label"] for cfg in DRIVE_PLATFORMS.values()
+]
 
 RAYON_ORDER: tuple[RayonType, ...] = (
     "Épicerie",
@@ -48,18 +81,182 @@ REGIME_DAYS: tuple[str, ...] = (
 )
 
 MEAL_PREFIXES: dict[str, str] = {slot: f"{slot} : " for slot in MEAL_SLOTS}
+
+
+def parse_meal_slot(slot: str) -> tuple[PlanningJourType, PlanningMomentType]:
+    """Convertit « Mardi soir » → (« Mardi », « Soir »)."""
+    lower = slot.strip().lower()
+    for moment in PLANNING_MOMENTS:
+        suffix = f" {moment.lower()}"
+        if lower.endswith(suffix):
+            jour_raw = slot[: -len(suffix)].strip()
+            if jour_raw in PLANNING_JOURS:
+                return jour_raw, moment  # type: ignore[return-value]
+            break
+    raise ValueError(f"Créneau repas invalide : {slot!r}")
 REGIME_PREFIXES: dict[str, str] = {day: f"{day} : " for day in REGIME_DAYS}
+
+PLANNING_JOURS: tuple[PlanningJourType, ...] = (
+    "Dimanche",
+    "Lundi",
+    "Mardi",
+    "Mercredi",
+    "Jeudi",
+    "Vendredi",
+    "Samedi",
+)
+PLANNING_MOMENTS: tuple[PlanningMomentType, ...] = ("Midi", "Soir")
+
+
+class PlanningRepasItem(BaseModel):
+    """Créneau repas — data pure renvoyée par l'IA (zéro HTML)."""
+
+    jour: PlanningJourType
+    moment: PlanningMomentType
+    plat: str = Field(..., min_length=1)
+    batch_cooking_dimanche: str = Field(
+        ...,
+        min_length=1,
+        description="Préparations à faire en avance le dimanche",
+    )
+    action_minute: str = Field(
+        ...,
+        min_length=1,
+        description="Actions rapides de dernière minute le jour J",
+    )
 
 
 class CourseItem(BaseModel):
+    """Besoin culinaire hebdomadaire — paquets calculés côté code (règle de trois)."""
+
     mot_cle: str = Field(..., min_length=1)
+    libelle: str = Field(..., min_length=1)
     rayon: RayonType
-    quantite: int = Field(..., ge=1)
+    quantite_recette: float = Field(..., ge=0.01)
+    unite_recette: UniteMesureType
+
+
+def format_besoin(course: CourseItem) -> str:
+    qty = course.quantite_recette
+    label = str(int(qty)) if qty == int(qty) else str(qty)
+    if course.unite_recette == "u":
+        return label
+    return f"{label} {course.unite_recette}"
+
+
+def format_article_besoin(course: CourseItem) -> str:
+    return f"{course.mot_cle} (Besoin : {format_besoin(course)})"
+
+
+def format_article_display(course: CourseItem) -> str:
+    """Libellé épuré pour l'UI (sans quantité dupliquée)."""
+    return course.libelle.strip() or course.mot_cle.strip()
+
+
+def platform_id_from_label(label: str) -> DrivePlatformId:
+    for platform_id, cfg in DRIVE_PLATFORMS.items():
+        if cfg["label"] == label:
+            return platform_id
+    return DEFAULT_DRIVE_PLATFORM
+
+
+def _harmoniser_besoin(
+    quantite: float, unite_recette: UniteMesureType, unite_paquet: UniteMesureType
+) -> float:
+    """Convertit le besoin recette dans l'échelle du conditionnement magasin."""
+    if unite_recette == unite_paquet:
+        return quantite
+    if unite_recette == "kg" and unite_paquet == "g":
+        return quantite * 1000
+    if unite_recette == "g" and unite_paquet == "kg":
+        return quantite / 1000
+    if unite_recette == "L" and unite_paquet == "ml":
+        return quantite * 1000
+    if unite_recette == "ml" and unite_paquet == "L":
+        return quantite / 1000
+    return quantite
+
+
+def determiner_nb_clics(
+    course: CourseItem,
+    mapping: dict[str, Any] | None,
+) -> int:
+    """Règle de trois : besoin recette → nombre de paquets à cliquer sur Leclerc."""
+    mapping = mapping or {}
+    unite_paquet = _extract_unite_paquet(mapping, fallback=course.unite_recette)
+    contenance = _extract_contenance_paquet(mapping, fallback=0.0)
+
+    if contenance <= 0:
+        return 0
+
+    if unite_paquet == "u":
+        return max(1, math.ceil(course.quantite_recette))
+
+    besoin = _harmoniser_besoin(course.quantite_recette, course.unite_recette, unite_paquet)
+    if unite_recette_incompatible(course.unite_recette, unite_paquet):
+        return 0
+
+    return max(1, math.ceil(besoin / contenance))
+
+
+def unite_recette_incompatible(unite_recette: UniteMesureType, unite_paquet: UniteMesureType) -> bool:
+    """True si les familles d'unités ne sont pas convertibles."""
+    solids = {"g", "kg"}
+    liquids = {"ml", "L"}
+    if unite_recette in solids and unite_paquet in liquids:
+        return True
+    if unite_recette in liquids and unite_paquet in solids:
+        return True
+    if unite_recette == "u" or unite_paquet == "u":
+        return unite_recette != unite_paquet
+    pairs = {("g", "kg"), ("kg", "g"), ("ml", "L"), ("L", "ml")}
+    return unite_recette != unite_paquet and (unite_recette, unite_paquet) not in pairs
+
+
+def _extract_contenance_paquet(mapping: dict[str, Any], *, fallback: float = 0.0) -> float:
+    if "contenance_paquet" in mapping:
+        return float(mapping["contenance_paquet"])
+    if "quantite_paquet" in mapping:
+        return float(mapping["quantite_paquet"])
+    return fallback
+
+
+def _extract_unite_paquet(
+    mapping: dict[str, Any], *, fallback: UniteMesureType = "u"
+) -> UniteMesureType:
+    raw = mapping.get("unite_paquet")
+    if raw in UNITE_MESURE_OPTIONS:
+        return raw
+    return fallback
 
 
 class DriveMenuAnalysisResult(BaseModel):
-    planning_html: str = Field(..., min_length=1)
+    planning_repas: list[PlanningRepasItem] = Field(..., min_length=1)
     liste_courses: list[CourseItem] = Field(..., min_length=1)
+
+
+def planning_repas_sort_key(item: PlanningRepasItem) -> tuple[int, int]:
+    moment_idx = 0 if item.moment == "Midi" else 1
+    try:
+        jour_idx = PLANNING_JOURS.index(item.jour)
+    except ValueError:
+        jour_idx = 99
+    return jour_idx, moment_idx
+
+
+def sort_planning_repas(items: list[PlanningRepasItem]) -> list[PlanningRepasItem]:
+    return sorted(items, key=planning_repas_sort_key)
+
+
+def escape_html(text: str) -> str:
+    return html_module.escape(text or "", quote=True)
+
+
+class DriveShoppingItem(CourseItem):
+    """Article sélectionné pour le robot — URL + paquets calculés."""
+
+    product_url: str | None = None
+    nb_paquets: int = Field(..., ge=0)
 
 
 @dataclass
@@ -67,7 +264,8 @@ class DriveMenuInput:
     plats: dict[str, str] = field(default_factory=dict)
     regime: dict[str, str] = field(default_factory=dict)
     extras: str = ""
-    nb_convives: int = 4
+    nb_convives_enfants: int = 4
+    nb_convives_regime: int = 4
     semaine_reference: date = field(default_factory=compute_menu_week_sunday)
 
 
@@ -81,11 +279,22 @@ def _strip_prefixed_line(raw: str, prefix: str) -> str | None:
     return value
 
 
+def parse_prefixed_textarea(
+    text: str,
+    keys: tuple[str, ...],
+    prefixes: dict[str, str],
+) -> dict[str, str]:
+    """Découpe un textarea ligne par ligne en dict clé → ligne brute."""
+    lines = (text or "").splitlines()
+    return {key: lines[i] if i < len(lines) else prefixes[key] for i, key in enumerate(keys)}
+
+
 def build_drive_menu_input(
     meal_values: dict[str, str],
     regime_values: dict[str, str],
     extras: str,
-    nb_convives: int,
+    nb_convives_enfants: int,
+    nb_convives_regime: int,
 ) -> DriveMenuInput:
     plats = {
         slot: cleaned
@@ -97,18 +306,18 @@ def build_drive_menu_input(
         for day in REGIME_DAYS
         if day in regime_values and (cleaned := _strip_prefixed_line(regime_values[day], REGIME_PREFIXES[day]))
     }
-    convives = max(1, int(nb_convives))
     return DriveMenuInput(
         plats=plats,
         regime=regime,
         extras=extras.strip(),
-        nb_convives=convives,
+        nb_convives_enfants=max(1, int(nb_convives_enfants)),
+        nb_convives_regime=max(1, int(nb_convives_regime)),
         semaine_reference=compute_menu_week_sunday(),
     )
 
 
-def default_meal_input_values() -> dict[str, str]:
-    return dict(MEAL_PREFIXES)
+def default_meal_textarea_value() -> str:
+    return "\n".join(MEAL_PREFIXES[slot] for slot in MEAL_SLOTS)
 
 
 def default_regime_textarea_value() -> str:

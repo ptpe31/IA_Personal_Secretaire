@@ -165,6 +165,53 @@ body, .nicegui-content {
     color: #1967d2;
     border-color: #aecbfa;
 }
+.trankil-drive-table .q-table__top,
+.trankil-drive-table .q-table__bottom {
+    display: none;
+}
+.trankil-drive-table thead tr:first-child th {
+    background: #166534 !important;
+    color: #ffffff !important;
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+    padding: 8px 10px;
+}
+.trankil-drive-table tbody td {
+    font-size: 0.8125rem;
+    color: #202124;
+    padding: 6px 10px;
+    vertical-align: middle;
+}
+.trankil-drive-table tbody tr:nth-child(even) {
+    background: #f0fdf4;
+}
+.trankil-drive-table tbody tr:nth-child(odd) {
+    background: #ffffff;
+}
+.trankil-drive-table .q-table__middle {
+    max-height: 58vh;
+}
+.trankil-drive-commande-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    background: #e8f0fe;
+    color: #1967d2;
+    font-weight: 700;
+    font-size: 0.8125rem;
+}
+.trankil-drive-url-missing .q-field__control {
+    border: 2px solid #f97316 !important;
+}
+.trankil-drive-platform-row {
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+}
 """
 
 # Quasar utility bundles + Tailwind (NiceGUI tailwind=True)

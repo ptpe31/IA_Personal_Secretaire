@@ -871,8 +871,9 @@ Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planni
 
 | Zone | Contenu |
 |------|---------|
-| Plats enfants | 14 créneaux (Dimanche midi/soir … Samedi midi/soir) avec préfixes fixes |
-| Convives | Nombre (défaut 4) |
+| Plats enfants | Textarea 14 lignes (Dimanche midi/soir … Samedi) avec préfixes fixes |
+| Convives enfants | Nombre (défaut 4) — plats |
+| Convives régime/extras | Nombre (défaut 4) — régime et extras |
 | Régime | 7 lignes Lundi→Dimanche avec préfixes |
 | Extras | Saisie libre (essuie-tout, couches, etc.) |
 
@@ -882,25 +883,46 @@ Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_d
 
 - Factory **`get_drive_analysis_client()`** : Gemini ou OpenRouter selon `active_ia_provider` (Paramètres) — **pas Ollama, pas Mock**.
 - Repli croisé cloud si le provider choisi est indisponible.
-- Modèle Pydantic `DriveMenuAnalysisResult` : `planning_html` + `liste_courses[]`.
-- Date du planning calculée par Python (`compute_menu_week_sunday`) — injectée dans le prompt user.
-- Post-traitement : `sanitize_html_quotes`, déduplication courses, normalisation rayons.
+- Modèle Pydantic `DriveMenuAnalysisResult` : `planning_repas[]` (`PlanningRepasItem` : `jour`, `moment`, `plat`, `batch_cooking_dimanche`, `action_minute`) + `liste_courses[]` (`CourseItem` : `mot_cle`, `libelle`, `rayon`, `quantite_recette`, `unite_recette`).
+- **L'IA ne génère plus de HTML** — data JSON pure uniquement ; le template HTML/CSS printanier est assemblé côté Python (`drive_pdf_service.render_planning_html`).
+- Mots-clés épurés (ex. `oeufs`, `jambon blanc`) sans packaging (`douzaine`, `en tranche`, etc.).
+- Date du planning calculée par Python (`compute_menu_week_sunday`) — injectée dans le prompt user et le PDF local.
+- Post-traitement : déduplication courses, normalisation rayons/jours/moments, tri `planning_repas`.
 
-### 8.3 Export PDF
+### 8.3 Restitution interactive — tableau courses
 
+Après génération IA, colonne droite : tableau haute densité par rayon :
+
+| Colonne | Comportement |
+|---------|--------------|
+| Checkbox | Coché par défaut ; décocher exclut du robot |
+| Quantité | `ui.number` éditable |
+| Article | `mot_cle` IA |
+| Lien Leclerc Drive | URL mémorisée (`drive_mapping.json`) ou champ vide bordure orange ; collage → sauvegarde immédiate mapping |
+
+### 8.4 Export PDF
+
+- **Template HTML local** (`drive_pdf_service.py`) : boucle Python sur `planning_repas` → lignes `<tr>`, CSS printanier fixe (#166534, #f0fdf4).
 - WeasyPrint → `~/Trankil-v2/Perso/GED/` avec nommage GED standard.
 - Prérequis macOS : `brew install pango gdk-pixbuf libffi` + `DYLD_FALLBACK_LIBRARY_PATH` dans `start.command`.
+- Modifier le look du PDF = éditer le template Python local, sans regénérer via l'IA.
 
-### 8.4 Robot Leclerc Drive
+### 8.5 Robot Leclerc Drive — stratégie URL `#plus`
 
 | Phase | Comportement |
 |-------|--------------|
-| Connexion | `launch_persistent_context` sur `~/.leclerc_profile` ; pause humaine login/magasin |
-| Courses | Bypass `page.goto(product_url)` si mapping connu ; sinon recherche + filtre « Marque Repère » |
-| Échecs | Liste `produits_a_valider` ; apprentissage par interception réseau (`page.on('request')`) |
-| Mapping | `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name } }` |
+| Connexion | `launch_persistent_context` sur `~/.leclerc_profile` ; ouverture magasin Roques-sur-Garonne ; pause `[▶️ Démarrer les courses]` |
+| Courses | **Uniquement bypass URL** : pour chaque article coché avec URL, `page.goto(url#plus)` × `quantite` — ajout auto panier Leclerc ; **aucune recherche** pour produits mémorisés |
+| Sans URL | Produit reporté dans `produits_a_valider` sans bloquer la boucle |
+| Apprentissage | Bip macOS ; recherche lente (`delay=180`) ; utilisateur ouvre la fiche produit ; capture `page.url` → `drive_mapping.json` ; mise à jour tableau UI en temps réel ; bouton [Passer] |
+| Stop | `🛑 STOPPER LE ROBOT` annule `_robot_task` ; fermeture propre navigateur (`context.close()`) |
+| Erreurs réseau | `try/except` sur `goto` → produit en échec / mapping supprimé si URL expirée |
 
-Simulation humaine : délais aléatoires 1,5–3,5 s. Logs préfixés `[LeclercBot]`.
+Modèle robot : `DriveShoppingItem` (`CourseItem` + `product_url` optionnelle).
+
+Mapping : `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name } }` — URLs stockées sans `#plus`.
+
+Simulation humaine : pauses 1,5–3,0 s après chaque `#plus`. Logs préfixés `[LeclercBot]`.
 
 ---
 

@@ -2,58 +2,75 @@
 
 from __future__ import annotations
 
-from app.models.drive import DriveMenuInput
+from app.models.drive import DriveMenuInput, MEAL_SLOTS, parse_meal_slot
 
 DRIVE_SYSTEM_PROMPT = """Tu es un chef de famille et expert en batch cooking pour une famille française.
-Ta mission : transformer un menu hebdomadaire en (1) un planning HTML imprimable et (2) une liste de courses optimisée pour la recherche Leclerc Drive.
+Ta mission : transformer un menu hebdomadaire en (1) un planning batch cooking structuré et (2) une liste de courses détaillée (besoins culinaires précis).
 
 RÉPONDS UNIQUEMENT en JSON valide. Aucun texte avant ou après le JSON. Aucun markdown. Aucun commentaire.
-INTERDICTION ABSOLUE : pas de réflexion, pas de commentaire, pas de champ supplémentaire.
-Le JSON doit contenir EXACTEMENT 2 clés racine : "planning_html" et "liste_courses".
+INTERDICTION ABSOLUE : pas de réflexion, pas de commentaire, pas de champ supplémentaire, AUCUN code HTML/CSS.
+Le JSON doit contenir EXACTEMENT 2 clés racine : "planning_repas" et "liste_courses".
 
-═══ RÈGLE 1 — planning_html ═══
-Produis un document HTML5 COMPLET et autonome (DOCTYPE + <html lang='fr'> + <head> + <body>).
-Le HTML sera converti en PDF via WeasyPrint : styles CSS inline ou dans <style>, pas de JavaScript, pas de ressources externes.
+═══ RÈGLE 1 — planning_repas (data pure, zéro balise HTML) ═══
+Génère UNIQUEMENT un objet pour chaque créneau EXPLICITEMENT listé dans « PLATS ENFANTS » du prompt utilisateur.
+INTERDICTION ABSOLUE : ne complète pas les créneaux vides, n'invente pas de repas pour les jours non saisis.
+Si un seul créneau est saisi (ex. « Mardi soir : épinards hachés »), planning_repas ne contient QU'UNE seule ligne.
+Ne fusionne pas les lignes : un objet par créneau saisi.
 
-Palette printanière verte obligatoire :
-- Fond page : #f0fdf4
-- En-tête tableau : #166534 (texte blanc)
-- Lignes alternées : #dcfce7 / #ffffff
-- Accents bordures : #86efac
-- Texte principal : #14532d
+Chaque objet contient :
+- "jour" : EXACTEMENT l'une des valeurs : "Dimanche" | "Lundi" | "Mardi" | "Mercredi" | "Jeudi" | "Vendredi" | "Samedi"
+- "moment" : "Midi" ou "Soir" — doit correspondre au créneau saisi (ex. « Mardi soir » → jour "Mardi", moment "Soir")
+- "plat" : nom du plat tel que saisi pour ce créneau (tu peux l'enrichir légèrement, ex. « épinards hachés et poisson »)
+- "batch_cooking_dimanche" : préparation dimanche (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur.
+- "action_minute" : action jour J (réchauffer, assembler, accompagnement frais, cuisson rapide)
 
-Structure obligatoire du <body> :
-1. <h1>Planning Batch Cooking — Semaine du [DATE]</h1>  (utiliser EXACTEMENT la date fournie dans le prompt utilisateur, section « DATE DU PLANNING »)
-2. <p>Convives : N | Régime pris en compte</p>
-3. <table> avec EXACTEMENT 4 colonnes : Jour | Plat | Batch Cooking (Dimanche) | Action Minute
-4. Une ligne par repas saisi (midi ET soir pour chaque jour concerné).
-5. Colonne « Batch Cooking (Dimanche) » : préparation dimanche (découpe, cuisson, marinade, portionnage).
-6. Colonne « Action Minute » : action jour J (réchauffer, assembler, accompagnement frais).
-7. Si un plat est identique sur plusieurs jours, le répéter sur chaque ligne.
+Si un plat est identique sur plusieurs jours, répète une ligne par créneau (ne fusionne pas).
 
-Le HTML doit tenir sur 1–2 pages A4. Police sans-serif. Taille texte 11–12px.
-
-═══ RÈGLE 2 — liste_courses ═══
+═══ RÈGLE 2 — liste_courses (besoin culinaire strict) ═══
 Un objet par ingrédient/produit à acheter :
-- "mot_cle" : terme recherche Leclerc Drive (2 à 5 mots, minuscules, sans article). Ex: "lait entier", "pates penne"
-- "rayon" : UNE des 5 valeurs EXACTES : "Épicerie" | "Frais" | "Fruits & Légumes" | "Bébé" | "Entretien"
-- "quantite" : entier ≥ 1 (clics sur le bouton + Leclerc)
 
-Règles quantités : adapter au nb convives (base 4), fusionner doublons, inclure tous les extras, exclure sel/poivre/huile/eau sauf si demandé.
+- "mot_cle" : Identifiant court stable (**3 mots maximum**, minuscules, sans article). Ex: "lait entier", "pomme de terre", "essuie-tout"
+- "libelle" : Description pour l'humain (**3 mots maximum**, nature/découpe). Ex: "lait entier UHT", "pommes de terre", "essuie-tout triple"
+- "rayon" : UNE des 5 valeurs EXACTES : "Épicerie" | "Frais" | "Fruits & Légumes" | "Bébé" | "Entretien"
+- "quantite_recette" : Quantité numérique brute nécessaire pour toute la semaine (décimal autorisé). Ex: 3.0, 1200.0, 12.0
+- "unite_recette" : Unité STRICTEMENT parmi : "g" | "kg" | "ml" | "L" | "u"
+  → "g" ou "kg" : solides et matières grasses (farine, pommes de terre, beurre, jambon)
+  → "ml" ou "L" : liquides (lait, crème, huile)
+  → "u" : produits comptables indivisibles (œufs, couches, essuie-tout, boîtes)
+
+INTERDICTION ABSOLUE : ne calcule PAS le nombre de paquets, boîtes ou bouteilles à acheter. Fournis uniquement le besoin culinaire total. Le logiciel fera la règle de trois avec le conditionnement magasin.
+
+Exemples :
+- 3 L de lait pour la semaine → quantite_recette: 3, unite_recette: "L"
+- 1,2 kg de pommes de terre → quantite_recette: 1.2, unite_recette: "kg"
+- 12 œufs → quantite_recette: 12, unite_recette: "u"
+- 200 g de jambon → quantite_recette: 200, unite_recette: "g"
+
+Règles quantités : adapter aux convives enfants et convives régime/extras (base 4 chacun), fusionner doublons (même mot_cle + même unite_recette), inclure extras, exclure sel/poivre/huile/eau sauf si demandé.
+Ne liste que les ingrédients des plats EXPLICITEMENT saisis + extras + suppléments régime. Pas d'ingrédients pour des repas non saisis.
 
 ═══ RÈGLE 3 — Cohérence menu ↔ courses ═══
-Couvrir chaque plat, respecter le régime quotidien, plats enfants prioritaires.
+Couvrir uniquement les plats saisis, respecter le régime quotidien saisi, plats enfants prioritaires.
 
-═══ RÈGLE 4 — Sécurité JSON ═══
-Dans planning_html, utiliser EXCLUSIVEMENT des guillemets simples pour attributs et styles CSS.
-Correct : <table style='width:100%' class='main'>
-INTERDIT : guillemets doubles à l'intérieur des balises HTML.
-Pas de trailing comma. Pas de champs supplémentaires.
+═══ RÈGLE 4 — JSON strict ═══
+Pas de trailing comma. Pas de champs supplémentaires. Pas de HTML.
 
 Structure JSON STRICTE :
 {
-  "planning_html": "<!DOCTYPE html><html lang='fr'>...</html>",
-  "liste_courses": [{"mot_cle": "lait entier", "rayon": "Frais", "quantite": 2}]
+  "planning_repas": [{
+    "jour": "Lundi",
+    "moment": "Midi",
+    "plat": "Colombo de poulet",
+    "batch_cooking_dimanche": "Découper les blancs, mariner dans les épices",
+    "action_minute": "Cuire à l'Air Fryer 15 min, réchauffer la sauce"
+  }],
+  "liste_courses": [{
+    "mot_cle": "lait entier",
+    "libelle": "lait entier UHT",
+    "rayon": "Frais",
+    "quantite_recette": 3,
+    "unite_recette": "L"
+  }]
 }"""
 
 
@@ -64,14 +81,18 @@ def build_drive_system_prompt() -> str:
 def build_drive_user_prompt(payload: DriveMenuInput) -> str:
     semaine_label = payload.semaine_reference.strftime("%d/%m/%Y")
     lines = [
-        "Analyse ce menu hebdomadaire et génère le planning batch cooking "
-        "+ la liste de courses Leclerc Drive.",
+        "Analyse ce menu hebdomadaire et génère le planning batch cooking structuré "
+        "(planning_repas en JSON pur, sans HTML) "
+        "+ la liste de courses (besoins culinaires en unités standardisées g/kg/ml/L/u).",
         "",
         "═══ DATE DU PLANNING ═══",
         f"Semaine du {semaine_label}",
         "",
-        "═══ CONVIVES ═══",
-        f"{payload.nb_convives} personnes",
+        "═══ CONVIVES ENFANTS (plats) ═══",
+        f"{payload.nb_convives_enfants} personnes",
+        "",
+        "═══ CONVIVES RÉGIME / EXTRAS ═══",
+        f"{payload.nb_convives_regime} personnes",
         "",
         "═══ PLATS ENFANTS (prioritaires) ═══",
     ]
@@ -79,6 +100,20 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         lines.append(f"{slot} : {plat}")
     if not payload.plats:
         lines.append("(aucun plat enfant saisi)")
+    else:
+        lines += [
+            "",
+            "═══ CONTRAINTE CRÉNEAUX (strict) ═══",
+            f"{len(payload.plats)} créneau(x) saisi(s) sur {len(MEAL_SLOTS)} — "
+            "planning_repas et liste_courses UNIQUEMENT pour ces créneaux.",
+        ]
+        for slot in payload.plats:
+            try:
+                jour, moment = parse_meal_slot(slot)
+                lines.append(f"  → autoriser : jour={jour!r}, moment={moment!r}")
+            except ValueError:
+                lines.append(f"  → créneau : {slot!r}")
+        lines.append("Ne génère AUCUN autre repas ni ingrédient pour les créneaux non listés ci-dessus.")
     lines += ["", "═══ RÉGIME ADULTE (supplément par jour) ═══"]
     for day, regime in payload.regime.items():
         lines.append(f"{day} : {regime}")
@@ -86,5 +121,5 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         lines.append("(aucune contrainte régime saisie)")
     lines += ["", "═══ EXTRAS (hors menu, à ajouter à la liste) ═══"]
     lines.append(payload.extras if payload.extras else "(aucun extra)")
-    lines += ["", "JSON strict uniquement."]
+    lines += ["", "JSON strict uniquement — planning_repas + liste_courses, sans HTML."]
     return "\n".join(lines)
