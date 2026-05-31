@@ -31,7 +31,8 @@ class BaseDriveDriver(ABC):
     async def run(self, items: list[DriveShoppingItem]) -> None:
         """Lance le robot sur la liste d'articles sélectionnés."""
 
-    async def signal_resume(self) -> None:
+    async def signal_resume(self, updated_items: list[DriveShoppingItem] | None = None) -> None:
+        """Relève la pause login ; updated_items remplace la liste figée au lancement."""
         self.resume_event.set()
 
     async def signal_skip_learning(self) -> None:

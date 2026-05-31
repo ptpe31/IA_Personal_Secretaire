@@ -25,7 +25,7 @@ from app.services.drive_mapping_service import (
 
 logger = logging.getLogger(__name__)
 
-# Références fortes pour empêcher Playwright de fermer le navigateur à la fin du run().
+# Références fortes sur le PlaywrightContextManager + BrowserContext (évite la fermeture GC).
 _OPEN_LECLERC_SESSIONS: list[tuple[Any, BrowserContext]] = []
 
 LECLERC_STORE_URL = (
@@ -68,10 +68,19 @@ class LeclercDriver(BaseDriveDriver):
         self._produits_a_valider: list[str] = []
         self._context: BrowserContext | None = None
         self._playwright: Any = None
+        self._playwright_mgr: Any = None
+        self.items: list[DriveShoppingItem] = []
+
+    async def signal_resume(self, updated_items: list[DriveShoppingItem] | None = None) -> None:
+        if updated_items is not None:
+            self.items = updated_items
+        self.resume_event.set()
 
     async def run(self, items: list[DriveShoppingItem]) -> None:
         self.resume_event.clear()
-        playwright = await async_playwright().start()
+        self.items = list(items)
+        self._playwright_mgr = async_playwright()
+        playwright = await self._playwright_mgr.start()
         self._playwright = playwright
         LECLERC_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
         context = await playwright.chromium.launch_persistent_context(
@@ -87,8 +96,8 @@ class LeclercDriver(BaseDriveDriver):
         page = context.pages[0] if context.pages else await context.new_page()
         try:
             await self._phase_login(page)
-            await self._phase_shopping(page, items)
-            await self._phase_learning(page, items)
+            await self._phase_shopping(page, self.items)
+            await self._phase_learning(page, self.items)
             await self._signal_robot_done(page)
             self.on_status(
                 "[LeclercBot] Terminé — « terminé » saisi dans la recherche, "
@@ -100,7 +109,9 @@ class LeclercDriver(BaseDriveDriver):
             )
             raise
         finally:
-            _OPEN_LECLERC_SESSIONS.append((playwright, context))
+            _OPEN_LECLERC_SESSIONS.append((self._playwright_mgr, context))
+            self._context = None
+
     async def _phase_login(self, page: Page) -> None:
         self.on_status(
             "Ouverture Leclerc Drive (Roques-sur-Garonne) — connectez-vous si nécessaire."
@@ -108,7 +119,9 @@ class LeclercDriver(BaseDriveDriver):
         await page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
         self.on_status("En attente : cliquez sur [▶️ Démarrer les courses] une fois prêt.")
         await self.resume_event.wait()
-        self.on_status("[LeclercBot] Session reprise — début des courses.")
+        self.on_status(
+            f"[LeclercBot] Session reprise — début des courses ({len(self.items)} article(s))."
+        )
 
     async def _phase_shopping(self, page: Page, items: list[DriveShoppingItem]) -> None:
         self._produits_a_valider = []

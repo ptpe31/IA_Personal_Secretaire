@@ -197,10 +197,15 @@ def create_drive_view():
     def _calc_commande(course: CourseItem, contenance: float, unite: str, mapping: dict[str, Any]) -> int:
         return determiner_nb_clics(course, _preview_mapping(course, contenance, unite, mapping))
 
-    def _build_table_row(course: CourseItem, *, actif: bool = True) -> dict[str, Any]:
+    def _default_row_actif(url: str) -> bool:
+        return bool((url or "").strip())
+
+    def _build_table_row(course: CourseItem, *, actif: bool | None = None) -> dict[str, Any]:
         row_id = _row_key(course)
         mapping = _store_mapping(course.mot_cle)
         url = mapping.get("product_url", "")
+        if actif is None:
+            actif = _default_row_actif(url)
         contenance, unite = _resolve_row_packaging(
             course, mapping, url=url, row_contenance=0.0, row_unite=""
         )
@@ -251,8 +256,8 @@ def create_drive_view():
             )
             for course in section_items:
                 row_id = _row_key(course)
-                previous = state["row_data"].get(row_id, {})
-                actif = previous.get("actif", True)
+                previous = state["row_data"].get(row_id)
+                actif = previous.get("actif") if previous is not None else None
                 rows.append(_build_table_row(course, actif=actif))
         table.rows = rows
         table.update()
@@ -297,6 +302,7 @@ def create_drive_view():
             normalized = normalize_product_url(row_data["url"])
             if normalized:
                 row_data["url"] = normalized
+                row_data["actif"] = True
                 save_mapping_entry(
                     course.mot_cle,
                     platform=_platform(),
@@ -307,6 +313,7 @@ def create_drive_view():
                 )
             else:
                 row_data["contenance"] = 0.0
+                row_data["actif"] = False
         mapping = _store_mapping(course.mot_cle)
         row_data["commande"] = _calc_commande(
             course, row_data["contenance"], row_data["unite"], mapping
@@ -336,7 +343,9 @@ def create_drive_view():
                 mapping = _store_mapping(course.mot_cle)
                 if not url.strip():
                     row_data["contenance"] = 0.0
+                    row_data["actif"] = False
                 else:
+                    row_data["actif"] = True
                     contenance, unite = _resolve_row_packaging(
                         course,
                         mapping,
@@ -730,9 +739,16 @@ def create_drive_view():
                 type="warning",
             )
             return
-        await driver.signal_resume()
+        updated_items = _get_shopping_items()
+        if not updated_items:
+            ui.notify("Aucun article coché dans la liste de courses.", type="warning")
+            return
+        await driver.signal_resume(updated_items)
         _set_resume_enabled(False)
-        ui.notify("Courses démarrées — le robot reprend la main.", type="positive")
+        ui.notify(
+            f"Courses démarrées — {len(updated_items)} article(s) synchronisé(s) depuis le tableau.",
+            type="positive",
+        )
 
     async def skip_product() -> None:
         driver = state.get("driver")
