@@ -17,6 +17,12 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 from app.config import LECLERC_PROFILE_PATH
+from app.services.leclerc_driver import (
+    _LECLERC_ADD_BTN,
+    _LECLERC_COUNTER,
+    _LECLERC_MORE_BTN,
+    _LECLERC_QTY,
+)
 
 DEFAULT_URL = (
     "https://fd4-courses.leclercdrive.fr/magasin-103101-103101-Roques-sur-Garonne-Toulouse/"
@@ -49,6 +55,10 @@ async def main() -> None:
             return
 
         probes = [
+            ("WCRS310 counter", page.locator(_LECLERC_COUNTER)),
+            ("WCRS310 More (+)", page.locator(_LECLERC_MORE_BTN)),
+            ("WCRS310 Add", page.locator(_LECLERC_ADD_BTN)),
+            ("WCRS310 qty", page.locator(_LECLERC_QTY)),
             ("conteneur-ajout", page.locator(".js-prix-ajout .conteneur-ajout, .conteneur-ajout")),
             ("divWCRS388", page.locator("#divWCRS388_FicheProduit")),
             ("role=button name=Ajouter au panier", page.get_by_role("button", name="Ajouter au panier")),
