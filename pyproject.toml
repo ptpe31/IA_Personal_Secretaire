@@ -16,6 +16,8 @@ dependencies = [
     "google-auth-oauthlib>=1.0",
     "google-auth-httplib2>=0.2",
     "google-genai>=1.0",
+    "playwright>=1.49",
+    "weasyprint>=62.0",
 ]
 
 [project.optional-dependencies]

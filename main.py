@@ -13,6 +13,7 @@ from app.config import APP_PORT, APP_TITLE, initialize_app_data
 from app.services.inbox_queue import register_inbox_queue_startup
 from app.services.notification_scheduler import start_notification_scheduler
 from app.ui.dashboard_view import create_dashboard_view
+from app.ui.drive_view import create_drive_view
 from app.ui.ged_view import create_ged_view
 from app.ui.google_theme import PAGE_BG, apply_google_theme
 from app.ui.inbox_view import create_inbox_view
@@ -60,12 +61,14 @@ def create_shell() -> None:
             dashboard_tab = ui.tab("Tableau de bord", icon="dashboard")
             inbox_tab = ui.tab("Inbox", icon="inbox")
             ged_tab = ui.tab("Archives", icon="folder")
+            drive_tab = ui.tab("Menu & Drive", icon="restaurant")
             settings_tab = ui.tab("Paramètres", icon="settings")
 
         tab_keys = {
             inbox_tab: "inbox",
             dashboard_tab: "dashboard",
             ged_tab: "ged",
+            drive_tab: "drive",
         }
 
         def switch_to_inbox() -> None:
@@ -81,6 +84,9 @@ def create_shell() -> None:
 
             with ui.tab_panel(ged_tab):
                 create_ged_view()
+
+            with ui.tab_panel(drive_tab):
+                create_drive_view()
 
             with ui.tab_panel(settings_tab):
                 create_settings_view()

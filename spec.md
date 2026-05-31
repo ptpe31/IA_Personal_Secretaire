@@ -1,8 +1,8 @@
 # Trankil-v2 — Spécification Technique & Fonctionnelle
 
-> **Version** : 0.11-implemented  
-> **Date** : 30 mai 2026  
-> **Statut** : V1 fonctionnelle — Sauvegarde SQLite chiffrée vers Google Drive (GPG + rclone), récurrence virtuelle, enrichissement URL IA, Vue Liste wide layout, Kanban, relances email J-1  
+> **Version** : 0.12-implemented  
+> **Date** : 31 mai 2026  
+> **Statut** : V1 fonctionnelle + **Menu & Drive** (planning batch cooking, robot Leclerc Playwright)  
 > **Dépôt git** : `IA_Personal_Secretaire` · **Nom UI** : **Trankil-v2**
 
 ---
@@ -16,13 +16,14 @@
 5. [Vue principale — Tableau de bord unifié](#5-vue-principale--tableau-de-bord-unifié)
 6. [Vue secondaire — Inbox (validation manuelle)](#6-vue-secondaire--inbox-validation-manuelle)
 7. [Vue 3 — GED / Archives](#7-vue-3--ged--archives)
-8. [Automatisations](#8-automatisations)
-9. [Intégration IA — Gemini, OpenRouter, Ollama & mock](#9-intégration-ia--gemini-openrouter-ollama--mock)
-10. [Intégration Google Calendar](#10-intégration-google-calendar)
-11. [Arborescence projet](#11-arborescence-projet)
-12. [Plan d'implémentation itérative](#12-plan-dimplémentation-itérative)
-13. [Décisions validées (arbitrages Architecte)](#13-décisions-validées-arbitrages-architecte)
-14. [Critères d'acceptation (MVP → V1)](#14-critères-dacceptation-mvp--v1)
+8. [Vue 4 — Menu & Drive](#8-vue-4--menu--drive)
+9. [Automatisations](#9-automatisations)
+10. [Intégration IA — Gemini, OpenRouter, Ollama & mock](#10-intégration-ia--gemini-openrouter-ollama--mock)
+11. [Intégration Google Calendar](#11-intégration-google-calendar)
+12. [Arborescence projet](#12-arborescence-projet)
+13. [Plan d'implémentation itérative](#13-plan-dimplémentation-itérative)
+14. [Décisions validées (arbitrages Architecte)](#14-décisions-validées-arbitrages-architecte)
+15. [Critères d'acceptation (MVP → V1)](#15-critères-dacceptation-mvp--v1)
 
 ---
 
@@ -107,8 +108,19 @@ google-auth-oauthlib
 Pillow                   # preview images
 pillow-heif              # support HEIC (photos iPhone)
 pdf2image                # PDF → image (requiert Poppler)
+playwright>=1.49         # Robot Leclerc Drive (Menu & Drive)
+weasyprint>=62.0         # Export PDF planning batch cooking
 pypdf                    # métadonnées PDF (optionnel)
 ```
+
+Prérequis système Menu & Drive :
+
+```bash
+brew install pango gdk-pixbuf libffi   # WeasyPrint (export PDF planning)
+playwright install chromium          # Robot Leclerc Drive
+```
+
+Le script `start.command` exporte `DYLD_FALLBACK_LIBRARY_PATH` pour WeasyPrint sur Apple Silicon.
 
 **Configuration `.env`** (voir `.env.example`) :
 
@@ -326,6 +338,8 @@ gpg -d /tmp/database-....sqlite.gz.gpg | gunzip > /tmp/database-restored.sqlite
 | Inbox temporaire | `~/Trankil-v2/.inbox/` (fichiers en attente de validation manuelle) |
 | Config email | `~/Trankil-v2/config.yaml` (optionnel — voir `config.yaml.example`) |
 | Credentials Google | `~/Trankil-v2/.credentials/google_calendar/` (hors git) |
+| Mapping Leclerc Drive | `~/Trankil-v2/drive_mapping.json` (mot-clé → produit mémorisé) |
+| Profil Playwright Leclerc | `~/Trankil-v2/.leclerc_profile/` (session persistante) |
 
 Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérieure.
 
@@ -849,7 +863,48 @@ Exemples :
 
 ---
 
-## 8. Automatisations
+## 8. Vue 4 — Menu & Drive
+
+Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planning batch cooking + liste de courses, export PDF vers GED Perso, robot Playwright Leclerc Drive.
+
+### 8.1 Saisie
+
+| Zone | Contenu |
+|------|---------|
+| Plats enfants | 14 créneaux (Dimanche midi/soir … Samedi midi/soir) avec préfixes fixes |
+| Convives | Nombre (défaut 4) |
+| Régime | 7 lignes Lundi→Dimanche avec préfixes |
+| Extras | Saisie libre (essuie-tout, couches, etc.) |
+
+Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_drive_menu_input`).
+
+### 8.2 Génération IA
+
+- Factory **`get_drive_analysis_client()`** : Gemini ou OpenRouter selon `active_ia_provider` (Paramètres) — **pas Ollama, pas Mock**.
+- Repli croisé cloud si le provider choisi est indisponible.
+- Modèle Pydantic `DriveMenuAnalysisResult` : `planning_html` + `liste_courses[]`.
+- Date du planning calculée par Python (`compute_menu_week_sunday`) — injectée dans le prompt user.
+- Post-traitement : `sanitize_html_quotes`, déduplication courses, normalisation rayons.
+
+### 8.3 Export PDF
+
+- WeasyPrint → `~/Trankil-v2/Perso/GED/` avec nommage GED standard.
+- Prérequis macOS : `brew install pango gdk-pixbuf libffi` + `DYLD_FALLBACK_LIBRARY_PATH` dans `start.command`.
+
+### 8.4 Robot Leclerc Drive
+
+| Phase | Comportement |
+|-------|--------------|
+| Connexion | `launch_persistent_context` sur `~/.leclerc_profile` ; pause humaine login/magasin |
+| Courses | Bypass `page.goto(product_url)` si mapping connu ; sinon recherche + filtre « Marque Repère » |
+| Échecs | Liste `produits_a_valider` ; apprentissage par interception réseau (`page.on('request')`) |
+| Mapping | `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name } }` |
+
+Simulation humaine : délais aléatoires 1,5–3,5 s. Logs préfixés `[LeclercBot]`.
+
+---
+
+## 9. Automatisations
 
 ### 8.1 Mode Autopilote
 
@@ -927,7 +982,7 @@ Voir §10.
 
 ---
 
-## 9. Intégration IA — Gemini, OpenRouter, Ollama & mock
+## 10. Intégration IA — Gemini, OpenRouter, Ollama & mock
 
 ### 9.1 Factory client (`get_analysis_client`)
 
@@ -1007,7 +1062,7 @@ Support natif via **`pillow-heif`** : conversion transparente HEIC → preview +
 
 ---
 
-## 10. Intégration Google Calendar
+## 11. Intégration Google Calendar
 
 ### 10.1 Périmètre V1
 
@@ -1050,7 +1105,7 @@ Service : `app/services/db_maintenance.py` (`purge_application_data`, `get_appli
 
 ---
 
-## 11. Arborescence projet
+## 12. Arborescence projet
 
 ```
 IA_Personal_Secretaire/          # dépôt git
@@ -1071,6 +1126,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   ├── models/
 │   │   ├── task.py
 │   │   ├── analysis.py          # DocumentAnalysisResult multi-tâches
+│   │   ├── drive.py             # DriveMenuAnalysisResult Menu & Drive
 │   │   └── archive.py
 │   ├── services/
 │   │   ├── task_service.py      # validate_inbox_tasks (1 doc → N tasks)
@@ -1078,9 +1134,14 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── archive_service.py
 │   │   ├── inbox_queue.py       # file FIFO async IA
 │   │   ├── autopilot_service.py # validation automatique
-│   │   ├── analysis_client.py   # factory OpenRouter → Gemini → Ollama → mock
+│   │   ├── analysis_client.py   # factory IA + get_drive_analysis_client (Menu & Drive)
 │   │   ├── analysis_prompt.py     # prompts Gemini / OpenRouter / Ollama
 │   │   ├── analysis_pipeline.py   # post-traitement JSON IA
+│   │   ├── drive_prompt.py        # prompts Menu & Drive
+│   │   ├── drive_analysis_pipeline.py
+│   │   ├── drive_pdf_service.py   # WeasyPrint → GED Perso
+│   │   ├── drive_mapping_service.py
+│   │   ├── leclerc_driver.py      # robot Playwright Leclerc Drive
 │   │   ├── gemini_client.py       # Google Gemini (google-genai)
 │   │   ├── openrouter_client.py   # OpenRouter / Qwen VL (mode Éco)
 │   │   ├── ollama_client.py       # fallback local
@@ -1099,6 +1160,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── manual_task_form.py  # création manuelle / routines
 │   │   ├── inbox_ui_safe.py     # garde-fous client NiceGUI
 │   │   ├── ged_view.py
+│   │   ├── drive_view.py        # Menu & Drive — menu, IA, robot Leclerc
 │   │   ├── settings_view.py
 │   │   ├── task_edit_dialog.py
 │   │   ├── task_badges.py       # icône récurrence + lien URL + notifications « Fait »
@@ -1124,7 +1186,7 @@ IA_Personal_Secretaire/          # dépôt git
 
 ---
 
-## 12. Plan d'implémentation itérative
+## 13. Plan d'implémentation itérative
 
 ### Phase 0 — Fondations ✅
 - [x] Initialiser dépôt, `pyproject.toml`, `.gitignore`
@@ -1189,7 +1251,7 @@ IA_Personal_Secretaire/          # dépôt git
 
 ---
 
-## 13. Décisions validées (arbitrages Architecte)
+## 14. Décisions validées (arbitrages Architecte)
 
 | Domaine | Décision |
 |---------|----------|
@@ -1229,7 +1291,7 @@ IA_Personal_Secretaire/          # dépôt git
 
 ---
 
-## 14. Critères d'acceptation (MVP → V1)
+## 15. Critères d'acceptation (MVP → V1)
 
 ### MVP (Phase 0–1) ✅
 

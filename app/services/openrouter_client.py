@@ -16,8 +16,11 @@ from app.config import (
     get_openrouter_model,
 )
 from app.models.analysis import DocumentAnalysisResult
+from app.models.drive import DriveMenuAnalysisResult, DriveMenuInput
 from app.services.analysis_client import AnalysisClient
 from app.services.analysis_pipeline import finalize_document_analysis, parse_json_content
+from app.services.drive_analysis_pipeline import finalize_drive_analysis
+from app.services.drive_prompt import build_drive_system_prompt, build_drive_user_prompt
 from app.services.analysis_prompt import build_system_prompt
 from app.utils.file_preview import load_image_bytes_for_vision
 
@@ -130,4 +133,51 @@ class OpenRouterClient(AnalysisClient):
                 exc,
                 exc_info=True,
             )
+            raise
+
+    def analyze_drive_menu(self, payload: DriveMenuInput) -> DriveMenuAnalysisResult:
+        if not self.api_key:
+            raise RuntimeError("Clé OpenRouter non configurée.")
+
+        system_prompt = build_drive_system_prompt()
+        user_prompt = build_drive_user_prompt(payload)
+
+        logger.info(
+            "[DRIVE-IA] OpenRouter — menu (%s plats, modèle=%s)",
+            len(payload.plats),
+            self.model_name,
+        )
+        logger.debug("[DRIVE-IA] user prompt (500 car.): %s", user_prompt[:500])
+
+        payload_body = {
+            "model": self.model_name,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.0,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": OPENROUTER_HTTP_REFERER,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = httpx.post(
+                OPENROUTER_API_URL,
+                json=payload_body,
+                headers=headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            if not content:
+                raise ValueError("Réponse OpenRouter vide (Menu & Drive)")
+            logger.info("[DRIVE-IA] OpenRouter — réponse OK (%s car.)", len(content))
+            data = parse_json_content(content)
+            return finalize_drive_analysis(data)
+        except Exception:
+            logger.exception("[DRIVE-IA] OpenRouter — échec analyse menu")
             raise

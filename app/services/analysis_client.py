@@ -6,8 +6,9 @@ import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.config import IA_PROVIDER_OPENROUTER, get_active_ia_provider
+from app.config import IA_PROVIDER_GEMINI, IA_PROVIDER_OPENROUTER, get_active_ia_provider
 from app.models.analysis import DocumentAnalysisResult
+from app.models.drive import DriveMenuAnalysisResult, DriveMenuInput
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,11 @@ class AnalysisClient(ABC):
 
     @abstractmethod
     def analyze_document(self, file_path: Path) -> DocumentAnalysisResult: ...
+
+    def analyze_drive_menu(self, payload: DriveMenuInput) -> DriveMenuAnalysisResult:
+        raise NotImplementedError(
+            f"{type(self).__name__} ne prend pas en charge analyze_drive_menu."
+        )
 
     @property
     def warning_message(self) -> str | None:
@@ -63,6 +69,39 @@ def get_analysis_client() -> AnalysisClient:
         "Bascule vers MockOllamaClient (aucun moteur IA configuré ou disponible)."
     )
     return MockOllamaClient()
+
+
+def get_drive_analysis_client() -> AnalysisClient:
+    """
+    Client IA Menu & Drive — Gemini / OpenRouter uniquement (pas Ollama, pas Mock).
+    Respecte active_ia_provider avec repli croisé cloud si le provider choisi est indisponible.
+    """
+    from app.services.gemini_client import GeminiClient
+    from app.services.openrouter_client import OpenRouterClient
+
+    provider = get_active_ia_provider()
+    openrouter = OpenRouterClient()
+    gemini = GeminiClient()
+
+    if provider == IA_PROVIDER_OPENROUTER:
+        if openrouter.is_available():
+            logger.info("[DRIVE-IA] OpenRouter — modèle %s", openrouter.model_name)
+            return openrouter
+        if gemini.is_available():
+            logger.warning("[DRIVE-IA] OpenRouter indisponible — repli Gemini.")
+            return gemini
+    else:
+        if gemini.is_available():
+            logger.info("[DRIVE-IA] Gemini — modèle %s", gemini.model_name)
+            return gemini
+        if openrouter.is_available():
+            logger.warning("[DRIVE-IA] Gemini indisponible — repli OpenRouter.")
+            return openrouter
+
+    raise RuntimeError(
+        "Aucun moteur IA cloud disponible pour Menu & Drive. "
+        "Configurez GEMINI_API_KEY ou OPENROUTER_API_KEY dans Paramètres / .env."
+    )
 
 
 def describe_analysis_engine(client: AnalysisClient) -> str:

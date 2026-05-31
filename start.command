@@ -25,6 +25,9 @@ fi
 export TRANKIL_LOG_LEVEL="${TRANKIL_LOG_LEVEL:-INFO}"
 echo "Niveau de logs : ${TRANKIL_LOG_LEVEL}"
 
+# WeasyPrint — bibliothèques Homebrew Apple Silicon / Intel
+export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+
 # Évite les imports obsolètes après une mise à jour du code
 find "$SCRIPT_DIR/app" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 

@@ -142,6 +142,14 @@ _MONTHS_FR = (
 )
 
 
+def compute_menu_week_sunday(today: date | None = None) -> date:
+    """Dimanche de référence : aujourd'hui si dimanche, sinon le prochain dimanche."""
+    ref = today or date.today()
+    if ref.weekday() == 6:
+        return ref
+    return ref + timedelta(days=6 - ref.weekday())
+
+
 def format_today_anchor(today: date | None = None) -> str:
     """Ancrage temporel injecté dans le prompt Ollama."""
     ref = today or date.today()

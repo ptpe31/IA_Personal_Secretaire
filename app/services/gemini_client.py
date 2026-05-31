@@ -11,8 +11,11 @@ from pydantic import ValidationError
 
 from app.config import get_gemini_api_key, get_gemini_model
 from app.models.analysis import DocumentAnalysisResult
+from app.models.drive import DriveMenuAnalysisResult, DriveMenuInput
 from app.services.analysis_client import AnalysisClient
 from app.services.analysis_pipeline import finalize_document_analysis, parse_json_content
+from app.services.drive_analysis_pipeline import finalize_drive_analysis
+from app.services.drive_prompt import build_drive_system_prompt, build_drive_user_prompt
 from app.services.analysis_prompt import build_gemini_system_prompt
 from app.utils.file_preview import load_image_bytes_for_vision
 
@@ -189,6 +192,48 @@ class GeminiClient(AnalysisClient):
                 exc=exc,
                 system_prompt=system_prompt,
             )
+            raise
+
+
+    def analyze_drive_menu(self, payload: DriveMenuInput) -> DriveMenuAnalysisResult:
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY non configurée.")
+
+        client = genai.Client(api_key=self.api_key)
+        system_prompt = build_drive_system_prompt()
+        user_prompt = build_drive_user_prompt(payload)
+
+        logger.info(
+            "[DRIVE-IA] Gemini — menu (%s plats, modèle=%s)",
+            len(payload.plats),
+            self.model_name,
+        )
+        logger.debug("[DRIVE-IA] user prompt (500 car.): %s", user_prompt[:500])
+
+        config = types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="application/json",
+            response_schema=DriveMenuAnalysisResult,
+            system_instruction=system_prompt,
+        )
+
+        try:
+            response = client.models.generate_content(
+                model=self.model_name,
+                contents=[types.Content(role="user", parts=[types.Part.from_text(text=user_prompt)])],
+                config=config,
+            )
+            content = response.text or ""
+            if not content:
+                raise ValueError("Réponse Gemini vide (Menu & Drive)")
+            logger.info("[DRIVE-IA] Gemini — réponse OK (%s car.)", len(content))
+            data = parse_json_content(content)
+            return finalize_drive_analysis(data)
+        except ValidationError:
+            logger.exception("[DRIVE-IA] Gemini — validation Pydantic échouée")
+            raise
+        except Exception:
+            logger.exception("[DRIVE-IA] Gemini — échec analyse menu")
             raise
 
 
