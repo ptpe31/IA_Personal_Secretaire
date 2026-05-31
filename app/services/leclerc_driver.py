@@ -25,22 +25,32 @@ from app.services.drive_mapping_service import (
 
 logger = logging.getLogger(__name__)
 
+# Références fortes pour empêcher Playwright de fermer le navigateur à la fin du run().
+_OPEN_LECLERC_SESSIONS: list[tuple[Any, BrowserContext]] = []
+
 LECLERC_STORE_URL = (
     "https://fd4-courses.leclercdrive.fr/"
     "magasin-103101-103101-Roques-sur-Garonne-Toulouse.aspx"
 )
 
 _FICHE_PRODUIT_ROOT = "#divWCRS388_FicheProduit, section.fiche-produit, .WCRS388_FicheProduit"
+_LECLERC_ADD_ZONE = ".conteneur-ajout, .js-prix-ajout .conteneur-ajout"
+_LECLERC_ADD_BTN = "#sLibellePictoAjouterProduit, a.aWCRS310_Add_Produit_Fiche"
 _LECLERC_COUNTER = "#js_bloc_plus_un_moins_un, .ajouterAuPanier-counter-bloc"
 _LECLERC_QTY = "#spanWCRS310Quantite, .spanWCRS310_count_Produit_Fiche"
-_LECLERC_ADD_BTN = (
-    "a.aWCRS310_Add_Produit_Fiche, #sLibellePictoAjouterProduit, "
-    "a:has-text('Ajouter au panier')"
-)
 _LECLERC_MORE_BTN = (
     "#js_bloc_plus_un_moins_un a.aWCRS310_More_Produit_Fiche, "
     "a.aWCRS310_More_Produit_Fiche[href='#plus']"
 )
+_LECLERC_SEARCH = (
+    "input[type='search'], "
+    "input[placeholder*='Rechercher' i], "
+    "input[id*='echerche' i], "
+    "input[name*='echerche' i], "
+    ".barre-recherche input, "
+    "#RechercheProduits"
+)
+_ROBOT_DONE_MARKER = "terminé"
 
 
 class LeclercDriver(BaseDriveDriver):
@@ -57,37 +67,40 @@ class LeclercDriver(BaseDriveDriver):
         super().__init__(on_status, on_failures, on_learned)
         self._produits_a_valider: list[str] = []
         self._context: BrowserContext | None = None
+        self._playwright: Any = None
 
     async def run(self, items: list[DriveShoppingItem]) -> None:
         self.resume_event.clear()
-        async with async_playwright() as playwright:
-            LECLERC_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
-            context = await playwright.chromium.launch_persistent_context(
-                str(LECLERC_PROFILE_PATH),
-                headless=False,
-                viewport={"width": 1400, "height": 900},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
+        playwright = await async_playwright().start()
+        self._playwright = playwright
+        LECLERC_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
+        context = await playwright.chromium.launch_persistent_context(
+            str(LECLERC_PROFILE_PATH),
+            headless=False,
+            viewport={"width": 1400, "height": 900},
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        self._context = context
+        page = context.pages[0] if context.pages else await context.new_page()
+        try:
+            await self._phase_login(page)
+            await self._phase_shopping(page, items)
+            await self._phase_learning(page, items)
+            await self._signal_robot_done(page)
+            self.on_status(
+                "[LeclercBot] Terminé — « terminé » saisi dans la recherche, "
+                "navigateur laissé ouvert pour vérifier le panier."
             )
-            self._context = context
-            page = context.pages[0] if context.pages else await context.new_page()
-            try:
-                await self._phase_login(page)
-                await self._phase_shopping(page, items)
-                await self._phase_learning(page, items)
-                self.on_status(
-                    "[LeclercBot] Terminé — navigateur laissé ouvert pour vérifier le panier."
-                )
-            except asyncio.CancelledError:
-                self.on_status(
-                    "[LeclercBot] Interrompu — navigateur laissé ouvert."
-                )
-                raise
-            finally:
-                self._context = None
-
+        except asyncio.CancelledError:
+            self.on_status(
+                "[LeclercBot] Interrompu — navigateur laissé ouvert."
+            )
+            raise
+        finally:
+            _OPEN_LECLERC_SESSIONS.append((playwright, context))
     async def _phase_login(self, page: Page) -> None:
         self.on_status(
             "Ouverture Leclerc Drive (Roques-sur-Garonne) — connectez-vous si nécessaire."
@@ -142,27 +155,23 @@ class LeclercDriver(BaseDriveDriver):
         )
 
     async def _visible_add_zone(self, page: Page):
-        """Zone d'ajout panier sur la fiche produit (pas le mini-panier header)."""
+        """Bloc .conteneur-ajout de la fiche produit (WCRS310, hors mini-panier header)."""
         fiche = await self._product_fiche_root(page)
-        locators = (
+        for scoped in (
+            fiche.locator(_LECLERC_ADD_ZONE),
+            page.locator(_LECLERC_ADD_ZONE),
             fiche.locator(_LECLERC_COUNTER),
-            page.locator(_LECLERC_COUNTER),
-            page.locator(".js-prix-ajout .conteneur-ajout"),
-            fiche.locator(".conteneur-ajout"),
-            page.locator(".fiche-produit .conteneur-ajout"),
-        )
-        for scoped in locators:
+        ):
             count = await scoped.count()
             for idx in range(count):
                 zone = scoped.nth(idx)
                 if not await zone.is_visible():
                     continue
-                if await zone.locator(
-                    f"{_LECLERC_ADD_BTN}, {_LECLERC_MORE_BTN}, "
-                    "button, a, [role='button'], .icon-plus, [class*='plus']"
-                ).count():
+                if await zone.locator(f"{_LECLERC_ADD_BTN}, {_LECLERC_MORE_BTN}").count():
                     return zone
-        raise RuntimeError("Zone d'ajout panier introuvable ou masquée sur la fiche produit")
+        raise RuntimeError(
+            "Zone .conteneur-ajout introuvable ou sans lien d'ajout (sLibellePictoAjouterProduit)"
+        )
 
     async def _wait_for_product_fiche(self, page: Page) -> None:
         await page.wait_for_load_state("domcontentloaded")
@@ -179,52 +188,35 @@ class LeclercDriver(BaseDriveDriver):
         await self._visible_add_zone(page)
         await page.wait_for_timeout(int(random.uniform(800, 1500)))
 
-    def _locate_add_controls(self, zone, page: Page):
-        btn_ajouter = (
-            zone.locator(_LECLERC_ADD_BTN)
-            .or_(page.locator(_LECLERC_ADD_BTN))
-            .or_(zone.get_by_role("button", name="Ajouter au panier"))
-            .or_(zone.get_by_role("link", name="Ajouter au panier"))
-            .or_(zone.get_by_text("Ajouter au panier", exact=True))
-            .or_(zone.locator("a:has-text('Ajouter au panier'), button:has-text('Ajouter au panier')"))
-            .first
-        )
-        btn_plus = (
-            zone.locator(_LECLERC_MORE_BTN)
-            .or_(page.locator(_LECLERC_MORE_BTN))
-            .or_(
-                zone.locator(
-                    "[class*='compteur'] button:last-child, [class*='Compteur'] button:last-child, "
-                    "[class*='quantite'] button:last-child, [class*='Quantite'] button:last-child"
-                )
-            )
-            .or_(zone.locator(".icon-plus, [class*='icon-plus'], [class*='IconPlus']"))
-            .or_(zone.locator("button[aria-label*='Augmenter'], button[aria-label*='augmenter']"))
-            .or_(zone.locator("a[aria-label*='Augmenter'], a[aria-label*='augmenter']"))
-            .or_(zone.locator("a.aWCRS310_More_Produit_Fiche"))
-            .or_(zone.locator("button:has-text('+'), a:has-text('+')"))
-            .first
-        )
+    def _locate_add_controls(self, zone):
+        """
+        Bouton initial = lien <a> #sLibellePictoAjouterProduit (pas role=button).
+        Incrément = aWCRS310_More_Produit_Fiche une fois le compteur affiché.
+        """
+        btn_ajouter = zone.locator(_LECLERC_ADD_BTN).first
+        btn_plus = zone.locator(_LECLERC_MORE_BTN).first
         return btn_ajouter, btn_plus
-
-    async def _pick_add_control(self, zone, page: Page, *, unit: int):
-        """1er paquet → Ajouter au panier ; suivants → bouton + Leclerc (WCRS310)."""
-        btn_ajouter, btn_plus = self._locate_add_controls(zone, page)
-        if unit > 1:
-            if await btn_plus.is_visible(timeout=5000):
-                return btn_plus, "bouton '+' (WCRS310)"
-            if await btn_ajouter.is_visible(timeout=2000):
-                return btn_ajouter, "'Ajouter au panier' (repli)"
-            raise RuntimeError("Bouton '+' introuvable après le premier ajout")
-        if await btn_ajouter.is_visible(timeout=3000):
-            return btn_ajouter, "'Ajouter au panier'"
-        if await btn_plus.is_visible(timeout=3000):
-            return btn_plus, "bouton '+'"
-        raise RuntimeError("Aucun bouton d'ajout au panier trouvé à l'écran")
 
     async def _click_add_once(self, page: Page, mot_cle: str, unit: int, total: int) -> None:
         zone = await self._visible_add_zone(page)
-        control, label = await self._pick_add_control(zone, page, unit=unit)
+        btn_ajouter, btn_plus = self._locate_add_controls(zone)
+
+        if unit > 1:
+            if await btn_plus.is_visible(timeout=5000):
+                control, label = btn_plus, "bouton '+' (WCRS310)"
+            elif await btn_ajouter.is_visible(timeout=2000):
+                control, label = btn_ajouter, "'Ajouter au panier' (lien initial, repli)"
+            else:
+                raise RuntimeError("Bouton '+' introuvable dans .conteneur-ajout")
+        elif await btn_ajouter.is_visible(timeout=5000):
+            control, label = btn_ajouter, "'Ajouter au panier' (lien #sLibellePictoAjouterProduit)"
+        elif await btn_plus.is_visible(timeout=3000):
+            control, label = btn_plus, "bouton '+' (incrémentation)"
+        else:
+            raise RuntimeError(
+                "Aucun élément d'ajout (ID: sLibellePictoAjouterProduit) visible dans .conteneur-ajout"
+            )
+
         await self._click_add_control(page, control, label, mot_cle, unit, total)
         await self._wait_for_fiche_qty_at_least(page, unit)
 
@@ -265,22 +257,9 @@ class LeclercDriver(BaseDriveDriver):
     async def _add_one_paquet(
         self, page: Page, mot_cle: str, base_url: str, unit: int, total: int
     ) -> bool:
-        """1er paquet : #plus ou « Ajouter au panier » ; suivants : clic sur + WCRS310."""
-        current = await self._read_fiche_qty(page)
-        if current >= unit:
+        """Clic direct sur le lien WCRS310 ; repli url#plus uniquement pour le 1er paquet."""
+        if await self._read_fiche_qty(page) >= unit:
             return True
-
-        if unit == 1 and current == 0:
-            try:
-                await page.goto(ensure_plus_url(base_url), wait_until="load", timeout=30000)
-                await page.wait_for_load_state("domcontentloaded")
-                await self._wait_for_fiche_qty_at_least(page, 1)
-                self.on_status(
-                    f"[LeclercBot] Ajout via #plus (Unité {unit}/{total}) : {mot_cle}"
-                )
-                return True
-            except Exception as exc:
-                logger.warning("[LeclercBot] #plus échoué %s unité 1 : %s", mot_cle, exc)
 
         try:
             await self._click_add_once(page, mot_cle, unit, total)
@@ -302,13 +281,13 @@ class LeclercDriver(BaseDriveDriver):
                     f"[LeclercBot] Ajout via #plus repli (Unité {unit}/{total}) : {mot_cle}"
                 )
                 return True
-            except Exception as exc:
+            except Exception as fallback_exc:
                 logger.warning(
                     "[LeclercBot] Échec d'ajout pour %s à l'unité %s/%s : %s",
                     mot_cle,
                     unit,
                     total,
-                    exc,
+                    fallback_exc,
                 )
 
         self.on_status(
@@ -316,6 +295,25 @@ class LeclercDriver(BaseDriveDriver):
             f"(quantité fiche : {await self._read_fiche_qty(page)})"
         )
         return False
+
+    async def _signal_robot_done(self, page: Page) -> None:
+        """Marqueur visuel de fin : « terminé » dans la barre de recherche, sans Entrée."""
+        for selector in _LECLERC_SEARCH.split(", "):
+            field = page.locator(selector.strip()).first
+            try:
+                if not await field.count():
+                    continue
+                await field.wait_for(state="visible", timeout=3000)
+                await field.click(timeout=3000)
+                await field.fill(_ROBOT_DONE_MARKER)
+                self.on_status(
+                    f"[LeclercBot] Signal de fin : « {_ROBOT_DONE_MARKER} » "
+                    "saisi dans la barre de recherche (sans validation)."
+                )
+                return
+            except Exception as exc:
+                logger.debug("[LeclercBot] Recherche %s : %s", selector.strip(), exc)
+        logger.warning("[LeclercBot] Barre de recherche introuvable pour le signal « terminé »")
 
     def _item_from_mapping(self, item: DriveShoppingItem) -> DriveShoppingItem | None:
         """Reconstruit l'article avec URL/contenance mémorisées pour un nouvel essai d'ajout."""

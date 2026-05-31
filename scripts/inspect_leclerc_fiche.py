@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright
 from app.config import LECLERC_PROFILE_PATH
 from app.services.leclerc_driver import (
     _LECLERC_ADD_BTN,
+    _LECLERC_ADD_ZONE,
     _LECLERC_COUNTER,
     _LECLERC_MORE_BTN,
     _LECLERC_QTY,
@@ -55,12 +56,11 @@ async def main() -> None:
             return
 
         probes = [
+            ("conteneur-ajout", page.locator(_LECLERC_ADD_ZONE)),
+            ("WCRS310 Add (lien <a>)", page.locator(_LECLERC_ADD_BTN)),
             ("WCRS310 counter", page.locator(_LECLERC_COUNTER)),
             ("WCRS310 More (+)", page.locator(_LECLERC_MORE_BTN)),
-            ("WCRS310 Add", page.locator(_LECLERC_ADD_BTN)),
             ("WCRS310 qty", page.locator(_LECLERC_QTY)),
-            ("conteneur-ajout", page.locator(".js-prix-ajout .conteneur-ajout, .conteneur-ajout")),
-            ("divWCRS388", page.locator("#divWCRS388_FicheProduit")),
             ("role=button name=Ajouter au panier", page.get_by_role("button", name="Ajouter au panier")),
             ("role=link name=Ajouter au panier", page.get_by_role("link", name="Ajouter au panier")),
             ("text=Ajouter au panier", page.get_by_text("Ajouter au panier", exact=True)),
