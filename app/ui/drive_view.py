@@ -12,6 +12,8 @@ from app.models.drive import (
     DRIVE_PLATFORM_SELECT_OPTIONS,
     DRIVE_PLATFORMS,
     DEFAULT_DRIVE_PLATFORM,
+    JOURS_ORDRE_ABSOLU,
+    PREMIER_JOUR_DEFAUT,
     RAYON_ORDER,
     UNITE_MESURE_OPTIONS,
     CourseItem,
@@ -20,7 +22,6 @@ from app.models.drive import (
     DriveShoppingItem,
     MEAL_PREFIXES,
     MEAL_SLOTS,
-    REGIME_DAYS,
     REGIME_PREFIXES,
     build_drive_menu_input,
     default_meal_textarea_value,
@@ -28,8 +29,12 @@ from app.models.drive import (
     determiner_nb_clics,
     format_article_display,
     format_besoin,
-    parse_prefixed_textarea,
+    format_prefixed_textarea,
+    ordered_meal_slots,
+    ordered_regime_days,
+    parse_prefixed_textarea_by_prefix,
     platform_id_from_label,
+
 )
 from app.services.analysis_client import describe_analysis_engine, get_drive_analysis_client
 from app.services.drive_driver_factory import create_drive_driver
@@ -83,6 +88,12 @@ def create_drive_view():
 
     anchor = ui.column().classes("w-full")
     with anchor:
+        premier_jour_select = ui.select(
+            label="Premier jour de la semaine",
+            options=list(JOURS_ORDRE_ABSOLU),
+            value=PREMIER_JOUR_DEFAUT,
+        ).classes("w-full mb-4")
+
         with ui.row().classes("w-full q-col-gutter-md items-start no-wrap"):
             with ui.column().classes("col-7"):
                 with ui.card().classes(f"w-full {CARD_GOOGLE}"):
@@ -154,11 +165,32 @@ def create_drive_view():
             skip_btn = ui.button("Passer ce produit", icon="skip_next").props("flat")
             skip_btn.set_visibility(False)
 
+    def _premier_jour() -> str:
+        return str(premier_jour_select.value or PREMIER_JOUR_DEFAUT)
+
+    def _all_meal_keys() -> tuple[str, ...]:
+        return tuple(MEAL_PREFIXES.keys())
+
     def _collect_meal_values() -> dict[str, str]:
-        return parse_prefixed_textarea(meals_input.value, MEAL_SLOTS, MEAL_PREFIXES)
+        return parse_prefixed_textarea_by_prefix(
+            meals_input.value, _all_meal_keys(), MEAL_PREFIXES
+        )
 
     def _collect_regime_values() -> dict[str, str]:
-        return parse_prefixed_textarea(regime_input.value, REGIME_DAYS, REGIME_PREFIXES)
+        return parse_prefixed_textarea_by_prefix(
+            regime_input.value, tuple(REGIME_PREFIXES.keys()), REGIME_PREFIXES
+        )
+
+    def _reorder_saisie_textareas() -> None:
+        pj = _premier_jour()
+        meals_input.value = format_prefixed_textarea(
+            _collect_meal_values(), ordered_meal_slots(pj)
+        )
+        regime_input.value = format_prefixed_textarea(
+            _collect_regime_values(), ordered_regime_days(pj)
+        )
+
+    premier_jour_select.on("update:model-value", lambda _: _reorder_saisie_textareas())
 
     def _row_key(course: CourseItem) -> str:
         return f"{course.mot_cle}::{course.unite_recette}"
@@ -551,6 +583,7 @@ def create_drive_view():
                         semaine_label=meta.get("semaine_label", ""),
                         nb_convives_enfants=int(meta.get("nb_convives_enfants", 4)),
                         nb_convives_regime=int(meta.get("nb_convives_regime", 4)),
+                        premier_jour_semaine=meta.get("premier_jour_semaine", PREMIER_JOUR_DEFAUT),
                     )
                     ui.html(planning_html, sanitize=False).classes("w-full")
 
@@ -563,6 +596,9 @@ def create_drive_view():
                                 semaine_label=meta_local.get("semaine_label", ""),
                                 nb_convives_enfants=int(meta_local.get("nb_convives_enfants", 4)),
                                 nb_convives_regime=int(meta_local.get("nb_convives_regime", 4)),
+                                premier_jour_semaine=meta_local.get(
+                                    "premier_jour_semaine", PREMIER_JOUR_DEFAUT
+                                ),
                             )
                             ui.notify(f"PDF enregistré : {path.name}", type="positive")
                         except Exception as exc:
@@ -629,6 +665,7 @@ def create_drive_view():
             extras_input.value or "",
             int(convives_enfants_input.value or 4),
             int(convives_regime_input.value or 4),
+            premier_jour_semaine=_premier_jour(),
         )
         if not payload.plats and not payload.extras:
             ui.notify("Saisissez au moins un plat ou un extra.", type="warning")
@@ -648,6 +685,7 @@ def create_drive_view():
                 "semaine_label": payload.semaine_reference.strftime("%d/%m/%Y"),
                 "nb_convives_enfants": payload.nb_convives_enfants,
                 "nb_convives_regime": payload.nb_convives_regime,
+                "premier_jour_semaine": payload.premier_jour_semaine,
             }
             result = await asyncio.to_thread(client.analyze_drive_menu, payload)
 

@@ -31,6 +31,18 @@ def test_build_drive_user_prompt_empty_sections():
     assert "planning_repas" in prompt
 
 
+def test_build_drive_user_prompt_chronologie():
+    payload = DriveMenuInput(
+        plats={"Mercredi midi": "tarte"},
+        premier_jour_semaine="Mercredi",
+        semaine_reference=date(2026, 6, 7),
+    )
+    prompt = build_drive_user_prompt(payload)
+    assert "CHRONOLOGIE DE LA SEMAINE" in prompt
+    assert "Premier jour de la semaine : Mercredi" in prompt
+    assert "Mercredi → Jeudi → Vendredi" in prompt
+
+
 def test_build_drive_user_prompt_single_slot_constraint():
     payload = DriveMenuInput(
         plats={"Mardi soir": "épinard haché"},

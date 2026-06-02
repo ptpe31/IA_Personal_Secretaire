@@ -73,10 +73,13 @@ def render_planning_html(
     semaine_label: str,
     nb_convives_enfants: int = 4,
     nb_convives_regime: int = 4,
+    premier_jour_semaine: str = "Lundi",
 ) -> str:
     """Assemble le HTML imprimable à partir des données structurées (sans IA)."""
     rows: list[str] = []
-    for item in sort_planning_repas(result.planning_repas):
+    for item in sort_planning_repas(
+        result.planning_repas, premier_jour=premier_jour_semaine
+    ):
         creneau = f"{escape_html(item.jour)} {escape_html(item.moment)}"
         rows.append(
             "<tr>"
@@ -125,6 +128,7 @@ def save_planning_pdf(
     semaine_label: str,
     nb_convives_enfants: int = 4,
     nb_convives_regime: int = 4,
+    premier_jour_semaine: str = "Lundi",
     title: str = "Planning_Batch_Cooking",
 ) -> Path:
     """Génère le HTML localement puis exporte le PDF vers ~/Trankil-v2/Perso/GED/."""
@@ -133,6 +137,7 @@ def save_planning_pdf(
         semaine_label=semaine_label,
         nb_convives_enfants=nb_convives_enfants,
         nb_convives_regime=nb_convives_regime,
+        premier_jour_semaine=premier_jour_semaine,
     )
     try:
         from weasyprint import HTML

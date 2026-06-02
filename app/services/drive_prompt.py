@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from app.models.drive import DriveMenuInput, MEAL_SLOTS, parse_meal_slot
+from app.models.drive import (
+    DriveMenuInput,
+    MEAL_SLOTS,
+    ordered_meal_slots,
+    ordered_regime_days,
+    ordered_week_days,
+    parse_meal_slot,
+)
 
 DRIVE_SYSTEM_PROMPT = """Tu es un chef de famille et expert en batch cooking pour une famille française.
 Ta mission : transformer un menu hebdomadaire en (1) un planning batch cooking structuré et (2) une liste de courses détaillée (besoins culinaires précis).
@@ -23,6 +30,8 @@ Chaque objet contient :
 - "plat" : nom du plat tel que saisi pour ce créneau (tu peux l'enrichir légèrement, ex. « épinards hachés et poisson »)
 - "batch_cooking_dimanche" : préparation dimanche (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur.
 - "action_minute" : action jour J (réchauffer, assembler, accompagnement frais, cuisson rapide)
+
+Chronologie : respecte l'ordre des jours indiqué dans « CHRONOLOGIE DE LA SEMAINE » du prompt utilisateur (premier jour → fin de semaine). Le batch cooking doit suivre cette progression.
 
 Si un plat est identique sur plusieurs jours, répète une ligne par créneau (ne fusionne pas).
 
@@ -80,6 +89,10 @@ def build_drive_system_prompt() -> str:
 
 def build_drive_user_prompt(payload: DriveMenuInput) -> str:
     semaine_label = payload.semaine_reference.strftime("%d/%m/%Y")
+    premier_jour = payload.premier_jour_semaine
+    week_days = ordered_week_days(premier_jour)
+    slot_order = ordered_meal_slots(premier_jour)
+    regime_order = ordered_regime_days(premier_jour)
     lines = [
         "Analyse ce menu hebdomadaire et génère le planning batch cooking structuré "
         "(planning_repas en JSON pur, sans HTML) "
@@ -87,6 +100,11 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         "",
         "═══ DATE DU PLANNING ═══",
         f"Semaine du {semaine_label}",
+        "",
+        "═══ CHRONOLOGIE DE LA SEMAINE ═══",
+        f"Premier jour de la semaine : {premier_jour}",
+        f"Ordre des jours à respecter : {' → '.join(week_days)}",
+        "Présente le batch cooking et les actions minute en suivant cette chronologie.",
         "",
         "═══ CONVIVES ENFANTS (plats) ═══",
         f"{payload.nb_convives_enfants} personnes",
@@ -96,8 +114,9 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         "",
         "═══ PLATS ENFANTS (prioritaires) ═══",
     ]
-    for slot, plat in payload.plats.items():
-        lines.append(f"{slot} : {plat}")
+    for slot in slot_order:
+        if slot in payload.plats:
+            lines.append(f"{slot} : {payload.plats[slot]}")
     if not payload.plats:
         lines.append("(aucun plat enfant saisi)")
     else:
@@ -107,7 +126,9 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
             f"{len(payload.plats)} créneau(x) saisi(s) sur {len(MEAL_SLOTS)} — "
             "planning_repas et liste_courses UNIQUEMENT pour ces créneaux.",
         ]
-        for slot in payload.plats:
+        for slot in slot_order:
+            if slot not in payload.plats:
+                continue
             try:
                 jour, moment = parse_meal_slot(slot)
                 lines.append(f"  → autoriser : jour={jour!r}, moment={moment!r}")
@@ -115,8 +136,9 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
                 lines.append(f"  → créneau : {slot!r}")
         lines.append("Ne génère AUCUN autre repas ni ingrédient pour les créneaux non listés ci-dessus.")
     lines += ["", "═══ RÉGIME ADULTE (supplément par jour) ═══"]
-    for day, regime in payload.regime.items():
-        lines.append(f"{day} : {regime}")
+    for day in regime_order:
+        if day in payload.regime:
+            lines.append(f"{day} : {payload.regime[day]}")
     if not payload.regime:
         lines.append("(aucune contrainte régime saisie)")
     lines += ["", "═══ EXTRAS (hors menu, à ajouter à la liste) ═══"]

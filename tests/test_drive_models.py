@@ -11,7 +11,10 @@ from app.models.drive import (
     DriveMenuAnalysisResult,
     PlanningRepasItem,
     build_drive_menu_input,
+    ordered_meal_slots,
+    ordered_week_days,
     parse_meal_slot,
+    sort_planning_repas,
 )
 from app.utils.dates import compute_menu_week_sunday
 
@@ -96,6 +99,60 @@ def test_course_item_rejects_invalid_rayon():
             quantite_recette=1,
             unite_recette="u",
         )
+
+
+def test_ordered_week_days_from_mercredi():
+    assert ordered_week_days("Mercredi") == (
+        "Mercredi",
+        "Jeudi",
+        "Vendredi",
+        "Samedi",
+        "Dimanche",
+        "Lundi",
+        "Mardi",
+    )
+
+
+def test_ordered_meal_slots_starts_with_premier_jour():
+    slots = ordered_meal_slots("Vendredi")
+    assert slots[0] == "Vendredi midi"
+    assert slots[-1] == "Jeudi soir"
+
+
+def test_sort_planning_repas_respects_premier_jour():
+    items = [
+        PlanningRepasItem(
+            jour="Lundi",
+            moment="Midi",
+            plat="A",
+            batch_cooking_dimanche="x",
+            action_minute="y",
+        ),
+        PlanningRepasItem(
+            jour="Mercredi",
+            moment="Midi",
+            plat="B",
+            batch_cooking_dimanche="x",
+            action_minute="y",
+        ),
+    ]
+    sorted_default = sort_planning_repas(items)
+    assert [p.plat for p in sorted_default] == ["A", "B"]
+    sorted_mercredi = sort_planning_repas(items, premier_jour="Mercredi")
+    assert [p.plat for p in sorted_mercredi] == ["B", "A"]
+
+
+def test_build_drive_menu_input_premier_jour():
+    payload = build_drive_menu_input(
+        {"Mercredi midi": "Mercredi midi : tarte"},
+        {},
+        "",
+        4,
+        4,
+        premier_jour_semaine="Mercredi",
+    )
+    assert payload.premier_jour_semaine == "Mercredi"
+    assert payload.plats["Mercredi midi"] == "tarte"
 
 
 def test_drive_menu_analysis_result_min_items():

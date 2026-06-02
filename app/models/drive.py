@@ -53,6 +53,17 @@ RAYON_ORDER: tuple[RayonType, ...] = (
     "Entretien",
 )
 
+JOURS_ORDRE_ABSOLU: tuple[PlanningJourType, ...] = (
+    "Lundi",
+    "Mardi",
+    "Mercredi",
+    "Jeudi",
+    "Vendredi",
+    "Samedi",
+    "Dimanche",
+)
+PREMIER_JOUR_DEFAUT: PlanningJourType = "Lundi"
+
 MEAL_SLOTS: tuple[str, ...] = (
     "Dimanche midi",
     "Dimanche soir",
@@ -80,6 +91,7 @@ REGIME_DAYS: tuple[str, ...] = (
     "Dimanche",
 )
 
+
 MEAL_PREFIXES: dict[str, str] = {slot: f"{slot} : " for slot in MEAL_SLOTS}
 
 
@@ -106,6 +118,27 @@ PLANNING_JOURS: tuple[PlanningJourType, ...] = (
     "Samedi",
 )
 PLANNING_MOMENTS: tuple[PlanningMomentType, ...] = ("Midi", "Soir")
+
+
+def ordered_week_days(premier_jour: str) -> tuple[PlanningJourType, ...]:
+    """Rotation Lundi→Dimanche commençant par le jour choisi."""
+    if premier_jour not in JOURS_ORDRE_ABSOLU:
+        premier_jour = PREMIER_JOUR_DEFAUT
+    idx = JOURS_ORDRE_ABSOLU.index(premier_jour)  # type: ignore[arg-type]
+    return JOURS_ORDRE_ABSOLU[idx:] + JOURS_ORDRE_ABSOLU[:idx]
+
+
+def ordered_meal_slots(premier_jour: str) -> tuple[str, ...]:
+    """Créneaux midi/soir dans l'ordre de la semaine utilisateur."""
+    return tuple(
+        f"{day} {moment.lower()}"
+        for day in ordered_week_days(premier_jour)
+        for moment in PLANNING_MOMENTS
+    )
+
+
+def ordered_regime_days(premier_jour: str) -> tuple[PlanningJourType, ...]:
+    return ordered_week_days(premier_jour)
 
 
 class PlanningRepasItem(BaseModel):
@@ -235,17 +268,26 @@ class DriveMenuAnalysisResult(BaseModel):
     liste_courses: list[CourseItem] = Field(..., min_length=1)
 
 
-def planning_repas_sort_key(item: PlanningRepasItem) -> tuple[int, int]:
+def planning_repas_sort_key(
+    item: PlanningRepasItem,
+    *,
+    premier_jour: str = PREMIER_JOUR_DEFAUT,
+) -> tuple[int, int]:
     moment_idx = 0 if item.moment == "Midi" else 1
+    week_order = ordered_week_days(premier_jour)
     try:
-        jour_idx = PLANNING_JOURS.index(item.jour)
+        jour_idx = week_order.index(item.jour)
     except ValueError:
         jour_idx = 99
     return jour_idx, moment_idx
 
 
-def sort_planning_repas(items: list[PlanningRepasItem]) -> list[PlanningRepasItem]:
-    return sorted(items, key=planning_repas_sort_key)
+def sort_planning_repas(
+    items: list[PlanningRepasItem],
+    *,
+    premier_jour: str = PREMIER_JOUR_DEFAUT,
+) -> list[PlanningRepasItem]:
+    return sorted(items, key=lambda i: planning_repas_sort_key(i, premier_jour=premier_jour))
 
 
 def escape_html(text: str) -> str:
@@ -267,6 +309,7 @@ class DriveMenuInput:
     nb_convives_enfants: int = 4
     nb_convives_regime: int = 4
     semaine_reference: date = field(default_factory=compute_menu_week_sunday)
+    premier_jour_semaine: PlanningJourType = PREMIER_JOUR_DEFAUT
 
 
 def _strip_prefixed_line(raw: str, prefix: str) -> str | None:
@@ -284,9 +327,33 @@ def parse_prefixed_textarea(
     keys: tuple[str, ...],
     prefixes: dict[str, str],
 ) -> dict[str, str]:
-    """Découpe un textarea ligne par ligne en dict clé → ligne brute."""
+    """Découpe un textarea ligne par ligne en dict clé → ligne brute (ordre par index)."""
     lines = (text or "").splitlines()
     return {key: lines[i] if i < len(lines) else prefixes[key] for i, key in enumerate(keys)}
+
+
+def parse_prefixed_textarea_by_prefix(
+    text: str,
+    keys: tuple[str, ...],
+    prefixes: dict[str, str],
+) -> dict[str, str]:
+    """Associe chaque clé à sa ligne via le préfixe (indépendant de l'ordre des lignes)."""
+    result = {key: prefixes[key] for key in keys}
+    prefix_only = {key: prefixes[key].strip().rstrip(":") for key in keys}
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for key in keys:
+            prefix = prefixes[key]
+            if stripped.startswith(prefix) or stripped == prefix_only[key]:
+                result[key] = line
+                break
+    return result
+
+
+def format_prefixed_textarea(values: dict[str, str], keys: tuple[str, ...]) -> str:
+    return "\n".join(values[key] for key in keys)
 
 
 def build_drive_menu_input(
@@ -295,17 +362,22 @@ def build_drive_menu_input(
     extras: str,
     nb_convives_enfants: int,
     nb_convives_regime: int,
+    *,
+    premier_jour_semaine: str = PREMIER_JOUR_DEFAUT,
 ) -> DriveMenuInput:
+    meal_slots = ordered_meal_slots(premier_jour_semaine)
+    regime_days = ordered_regime_days(premier_jour_semaine)
     plats = {
         slot: cleaned
-        for slot in MEAL_SLOTS
+        for slot in meal_slots
         if slot in meal_values and (cleaned := _strip_prefixed_line(meal_values[slot], MEAL_PREFIXES[slot]))
     }
     regime = {
         day: cleaned
-        for day in REGIME_DAYS
+        for day in regime_days
         if day in regime_values and (cleaned := _strip_prefixed_line(regime_values[day], REGIME_PREFIXES[day]))
     }
+    pj = premier_jour_semaine if premier_jour_semaine in JOURS_ORDRE_ABSOLU else PREMIER_JOUR_DEFAUT
     return DriveMenuInput(
         plats=plats,
         regime=regime,
@@ -313,12 +385,13 @@ def build_drive_menu_input(
         nb_convives_enfants=max(1, int(nb_convives_enfants)),
         nb_convives_regime=max(1, int(nb_convives_regime)),
         semaine_reference=compute_menu_week_sunday(),
+        premier_jour_semaine=pj,  # type: ignore[arg-type]
     )
 
 
-def default_meal_textarea_value() -> str:
-    return "\n".join(MEAL_PREFIXES[slot] for slot in MEAL_SLOTS)
+def default_meal_textarea_value(premier_jour: str = PREMIER_JOUR_DEFAUT) -> str:
+    return "\n".join(MEAL_PREFIXES[slot] for slot in ordered_meal_slots(premier_jour))
 
 
-def default_regime_textarea_value() -> str:
-    return "\n".join(REGIME_PREFIXES[day] for day in REGIME_DAYS)
+def default_regime_textarea_value(premier_jour: str = PREMIER_JOUR_DEFAUT) -> str:
+    return "\n".join(REGIME_PREFIXES[day] for day in ordered_regime_days(premier_jour))

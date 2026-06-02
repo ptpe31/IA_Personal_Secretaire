@@ -16,6 +16,7 @@ from app.models.drive import (
     RayonType,
     UniteMesureType,
     parse_meal_slot,
+    PREMIER_JOUR_DEFAUT,
     sort_planning_repas,
 )
 
@@ -325,6 +326,7 @@ def finalize_drive_analysis(
     data: dict,
     *,
     input_plats: dict[str, str] | None = None,
+    premier_jour_semaine: str = PREMIER_JOUR_DEFAUT,
 ) -> DriveMenuAnalysisResult:
     cleaned = dict(data)
 
@@ -344,7 +346,9 @@ def finalize_drive_analysis(
         raise ValueError(
             "planning_repas vide ou invalide — aucun créneau ne correspond à la saisie utilisateur."
         )
-    cleaned["planning_repas"] = sort_planning_repas(planning_items)
+    cleaned["planning_repas"] = sort_planning_repas(
+        planning_items, premier_jour=premier_jour_semaine
+    )
 
     raw_list = cleaned.get("liste_courses", [])
     if not isinstance(raw_list, list):

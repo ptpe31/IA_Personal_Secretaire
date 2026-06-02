@@ -228,7 +228,11 @@ class GeminiClient(AnalysisClient):
                 raise ValueError("Réponse Gemini vide (Menu & Drive)")
             logger.info("[DRIVE-IA] Gemini — réponse OK (%s car.)", len(content))
             data = parse_json_content(content)
-            return finalize_drive_analysis(data, input_plats=payload.plats)
+            return finalize_drive_analysis(
+                data,
+                input_plats=payload.plats,
+                premier_jour_semaine=payload.premier_jour_semaine,
+            )
         except ValidationError:
             logger.exception("[DRIVE-IA] Gemini — validation Pydantic échouée")
             raise
