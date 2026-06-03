@@ -8,6 +8,8 @@ from typing import Any
 
 from nicegui import ui
 
+from app.config import CURRENT_MENU_PATH
+
 from app.models.drive import (
     DRIVE_PLATFORM_SELECT_OPTIONS,
     DRIVE_PLATFORMS,
@@ -44,6 +46,11 @@ from app.services.drive_mapping_service import (
     save_mapping_entry,
 )
 from app.services.drive_pdf_service import render_planning_html, save_planning_pdf
+from app.services.drive_ui_state import (
+    load_drive_ui_state,
+    parse_saved_analysis,
+    save_drive_ui_state,
+)
 from app.ui.google_theme import CARD_GOOGLE
 from app.ui.inbox_ui_safe import element_client_alive, run_if_client_alive
 from app.ui.tab_registry import register_tab_refresh
@@ -70,15 +77,25 @@ _DRIVE_TABLE_COLUMNS = [
 
 def create_drive_view():
     """Construit l'onglet Menu & Drive."""
+    saved_ui = load_drive_ui_state() or {}
+    saved_premier_jour = saved_ui.get("premier_jour_semaine", PREMIER_JOUR_DEFAUT)
+    if saved_premier_jour not in JOURS_ORDRE_ABSOLU:
+        saved_premier_jour = PREMIER_JOUR_DEFAUT
+    saved_platform = saved_ui.get("platform", DEFAULT_DRIVE_PLATFORM)
+    if saved_platform not in DRIVE_PLATFORMS:
+        saved_platform = DEFAULT_DRIVE_PLATFORM
+
     state: dict[str, Any] = {
         "result": None,
         "row_data": {},
         "table": None,
+        "platform_select": None,
         "driver": None,
         "robot_task": None,
         "learning_active": False,
-        "platform": DEFAULT_DRIVE_PLATFORM,
-        "menu_meta": {},
+        "platform": saved_platform,
+        "menu_meta": dict(saved_ui.get("menu_meta") or {}),
+        "save_debounce_task": None,
     }
 
     ui.label("Menu & Drive").classes("text-h5 text-weight-medium text-grey-9 q-mb-xs")
@@ -91,45 +108,65 @@ def create_drive_view():
         premier_jour_select = ui.select(
             label="Premier jour de la semaine",
             options=list(JOURS_ORDRE_ABSOLU),
-            value=PREMIER_JOUR_DEFAUT,
+            value=saved_premier_jour,
         ).classes("w-full mb-4")
 
-        with ui.row().classes("w-full q-col-gutter-md items-start no-wrap"):
-            with ui.column().classes("col-7"):
+        with ui.row().classes("w-full q-col-gutter-md items-start"):
+            with ui.column().classes("col-4"):
                 with ui.card().classes(f"w-full {CARD_GOOGLE}"):
                     ui.label("🍽️ Plats de la semaine (Enfants)").classes("text-subtitle1 q-mb-sm")
                     convives_enfants_input = ui.number(
                         "Nombre de convives (enfants)",
-                        value=4,
+                        value=int(saved_ui.get("convives_enfants", 4)),
                         min=1,
                         max=20,
                     ).props("outlined dense").classes("w-full q-mb-sm")
-                    meals_input = ui.textarea(value=default_meal_textarea_value()).props(
-                        "outlined autogrow rows=14"
-                    ).classes("w-full")
+                    meals_input = ui.textarea(
+                        value=saved_ui.get("meals_text")
+                        or default_meal_textarea_value(saved_premier_jour)
+                    ).props("outlined autogrow rows=14").classes("w-full")
 
-            with ui.column().classes("col-5"):
+            with ui.column().classes("col-4"):
                 with ui.card().classes(f"w-full {CARD_GOOGLE}"):
-                    ui.label("👥 Extras & Régime").classes("text-subtitle1 q-mb-sm")
+                    ui.label("👥 Régime").classes("text-subtitle1 q-mb-sm")
                     convives_regime_input = ui.number(
-                        "Nombre de convives (régime / extras)",
-                        value=4,
+                        "Nombre de convives (régime)",
+                        value=int(saved_ui.get("convives_regime", 4)),
                         min=1,
                         max=20,
                     ).props("outlined dense").classes("w-full q-mb-sm")
                     ui.label("Régime spécifique").classes("text-caption text-grey-7")
-                    regime_input = ui.textarea(value=default_regime_textarea_value()).props(
-                        "outlined autogrow rows=7"
-                    ).classes("w-full q-mb-sm")
-                    ui.label("Choses à ajouter (Extras)").classes("text-caption text-grey-7")
-                    extras_input = ui.textarea(
-                        placeholder="rouleau essuie-tout, couches, œufs…"
-                    ).props("outlined autogrow rows=4").classes("w-full")
+                    regime_input = ui.textarea(
+                        value=saved_ui.get("regime_text")
+                        or default_regime_textarea_value(saved_premier_jour)
+                    ).props("outlined autogrow rows=14").classes("w-full")
 
-        generate_btn = ui.button(
-            "✨ Générer le Planning & le Panier",
-            icon="auto_awesome",
-        ).props("color=primary unelevated").classes("q-my-md")
+            with ui.column().classes("col-4"):
+                with ui.card().classes(f"w-full {CARD_GOOGLE}"):
+                    ui.label("📦 Choses à ajouter").classes("text-subtitle1 q-mb-sm")
+                    extras_input = ui.textarea(
+                        value=saved_ui.get("extras_text", ""),
+                        placeholder="rouleau essuie-tout, couches, œufs…",
+                    ).props("outlined autogrow rows=8").classes("w-full q-mb-sm")
+                    ui.label("Commentaires").classes("text-caption text-grey-7")
+                    commentaires_input = ui.textarea(
+                        value=saved_ui.get("commentaires_text", ""),
+                        placeholder="Notes libres pour la semaine…",
+                    ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
+                    reset_col3_btn = ui.button(
+                        "🧹 Effacer cette colonne",
+                        icon="cleaning_services",
+                    ).props("flat color=grey dense")
+
+        with ui.row().classes("q-gutter-sm q-my-md items-center"):
+            generate_btn = ui.button(
+                "✨ Générer le Planning & le Panier",
+                icon="auto_awesome",
+            ).props("color=primary unelevated")
+            reset_btn = ui.button(
+                "🧹 TOUT EFFACER",
+                icon="delete_sweep",
+            ).props("outline color=grey")
 
         spinner_row = ui.row().classes("items-center q-gutter-sm q-mb-md")
         spinner_row.set_visibility(False)
@@ -189,6 +226,53 @@ def create_drive_view():
         regime_input.value = format_prefixed_textarea(
             _collect_regime_values(), ordered_regime_days(pj)
         )
+        _schedule_save()
+
+    def _build_save_payload() -> dict[str, Any]:
+        row_states: dict[str, Any] = {}
+        for row_id, row_data in state.get("row_data", {}).items():
+            row_states[row_id] = {
+                "actif": bool(row_data.get("actif", True)),
+                "contenance": float(row_data.get("contenance", 0)),
+                "unite": str(row_data.get("unite", "")),
+                "url": str(row_data.get("url", "")),
+            }
+        payload: dict[str, Any] = {
+            "premier_jour_semaine": _premier_jour(),
+            "convives_enfants": int(convives_enfants_input.value or 4),
+            "convives_regime": int(convives_regime_input.value or 4),
+            "meals_text": meals_input.value or "",
+            "regime_text": regime_input.value or "",
+            "extras_text": extras_input.value or "",
+            "commentaires_text": commentaires_input.value or "",
+            "platform": _platform(),
+            "menu_meta": dict(state.get("menu_meta") or {}),
+            "row_states": row_states,
+        }
+        result: DriveMenuAnalysisResult | None = state.get("result")
+        if result is not None:
+            payload["analysis_result"] = result.model_dump(mode="json")
+        return payload
+
+    async def _save_current_ui_state() -> None:
+        await asyncio.to_thread(save_drive_ui_state, _build_save_payload())
+
+    def _schedule_save() -> None:
+        task = state.get("save_debounce_task")
+        if task is not None and not task.done():
+            task.cancel()
+
+        async def _debounced() -> None:
+            try:
+                await asyncio.sleep(0.35)
+                await _save_current_ui_state()
+            except asyncio.CancelledError:
+                pass
+
+        state["save_debounce_task"] = asyncio.create_task(_debounced())
+
+    def _wire_autosave(element, *, event: str = "update:model-value") -> None:
+        element.on(event, lambda _: _schedule_save())
 
     premier_jour_select.on("update:model-value", lambda _: _reorder_saisie_textareas())
 
@@ -232,15 +316,31 @@ def create_drive_view():
     def _default_row_actif(url: str) -> bool:
         return bool((url or "").strip())
 
-    def _build_table_row(course: CourseItem, *, actif: bool | None = None) -> dict[str, Any]:
+    def _build_table_row(
+        course: CourseItem,
+        *,
+        actif: bool | None = None,
+        saved_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         row_id = _row_key(course)
         mapping = _store_mapping(course.mot_cle)
         url = mapping.get("product_url", "")
-        if actif is None:
-            actif = _default_row_actif(url)
-        contenance, unite = _resolve_row_packaging(
-            course, mapping, url=url, row_contenance=0.0, row_unite=""
-        )
+        if saved_row:
+            url = str(saved_row.get("url") or url)
+            contenance = float(saved_row.get("contenance", 0))
+            unite = str(
+                saved_row.get("unite")
+                or mapping.get("unite_paquet")
+                or course.unite_recette
+            )
+            if actif is None:
+                actif = bool(saved_row.get("actif", _default_row_actif(url)))
+        else:
+            if actif is None:
+                actif = _default_row_actif(url)
+            contenance, unite = _resolve_row_packaging(
+                course, mapping, url=url, row_contenance=0.0, row_unite=""
+            )
         commande = _calc_commande(course, contenance, unite, mapping)
         state["row_data"][row_id] = {
             "course": course,
@@ -293,6 +393,7 @@ def create_drive_view():
                 rows.append(_build_table_row(course, actif=actif))
         table.rows = rows
         table.update()
+        _schedule_save()
 
     def _on_drive_row_update(event) -> None:
         args = event.args or {}
@@ -351,6 +452,7 @@ def create_drive_view():
             course, row_data["contenance"], row_data["unite"], mapping
         )
         _sync_table_row_from_state(row_id)
+        _schedule_save()
 
     def _sync_table_row_from_state(row_id: str) -> None:
         table = state.get("table")
@@ -561,14 +663,23 @@ def create_drive_view():
         state["platform"] = platform
         _update_robot_labels()
         _refresh_table_rows()
+        _schedule_save()
 
-    def show_results(result: DriveMenuAnalysisResult) -> None:
+    def show_results(
+        result: DriveMenuAnalysisResult,
+        *,
+        restore_rows: dict[str, Any] | None = None,
+        initial_platform: DrivePlatformId | None = None,
+    ) -> None:
         state["result"] = result
         state["row_data"] = {}
+        state["platform_select"] = None
         results_container.clear()
         results_container.set_visibility(True)
         robot_banner.set_visibility(True)
         robot_row.set_visibility(True)
+        platform = initial_platform or _platform()
+        state["platform"] = platform
         _update_robot_labels()
 
         with results_container:
@@ -621,10 +732,12 @@ def create_drive_view():
                         )
                         platform_select = ui.select(
                             DRIVE_PLATFORM_SELECT_OPTIONS,
-                            value=DRIVE_PLATFORMS[DEFAULT_DRIVE_PLATFORM]["label"],
+                            value=DRIVE_PLATFORMS[platform]["label"],
                         ).props("outlined dense options-dense").classes("col-grow")
                         platform_select.on("update:model-value", _on_platform_change)
+                        state["platform_select"] = platform_select
 
+                    saved_rows = restore_rows or {}
                     rows: list[dict[str, Any]] = []
                     for rayon in RAYON_ORDER:
                         section_items = [c for c in result.liste_courses if c.rayon == rayon]
@@ -645,7 +758,13 @@ def create_drive_view():
                             }
                         )
                         for course in section_items:
-                            rows.append(_build_table_row(course))
+                            row_id = _row_key(course)
+                            rows.append(
+                                _build_table_row(
+                                    course,
+                                    saved_row=saved_rows.get(row_id),
+                                )
+                            )
 
                     table = ui.table(
                         columns=_DRIVE_TABLE_COLUMNS,
@@ -657,6 +776,8 @@ def create_drive_view():
                     )
                     _configure_drive_table(table)
                     state["table"] = table
+
+        _schedule_save()
 
     async def generate() -> None:
         payload = build_drive_menu_input(
@@ -692,6 +813,7 @@ def create_drive_view():
             def _show() -> None:
                 show_results(result)
                 ui.notify("Planning et liste de courses générés.", type="positive")
+                _schedule_save()
 
             run_if_client_alive(anchor, _show)
         except RuntimeError as exc:
@@ -795,7 +917,48 @@ def create_drive_view():
             skip_btn.set_visibility(False)
             state["learning_active"] = False
 
+    async def reset_col3() -> None:
+        extras_input.value = ""
+        commentaires_input.value = ""
+        await _save_current_ui_state()
+        ui.notify("Colonne « Choses à ajouter » effacée.", type="info")
+
+    async def reset_current_week() -> None:
+        task = state.get("save_debounce_task")
+        if task is not None and not task.done():
+            task.cancel()
+        if CURRENT_MENU_PATH.is_file():
+            CURRENT_MENU_PATH.unlink(missing_ok=True)
+        premier_jour_select.value = PREMIER_JOUR_DEFAUT
+        convives_enfants_input.value = 4
+        convives_regime_input.value = 4
+        meals_input.value = default_meal_textarea_value()
+        regime_input.value = default_regime_textarea_value()
+        extras_input.value = ""
+        commentaires_input.value = ""
+        state["result"] = None
+        state["row_data"] = {}
+        state["table"] = None
+        state["platform_select"] = None
+        state["platform"] = DEFAULT_DRIVE_PLATFORM
+        state["menu_meta"] = {}
+        results_container.clear()
+        results_container.set_visibility(False)
+        robot_banner.set_visibility(False)
+        robot_row.set_visibility(False)
+        status_label.text = ""
+        failures_container.clear()
+        ui.notify("Session réinitialisée.", type="info")
+
     generate_btn.on("click", generate)
+    reset_btn.on("click", reset_current_week)
+    reset_col3_btn.on("click", reset_col3)
+    _wire_autosave(meals_input)
+    _wire_autosave(regime_input)
+    _wire_autosave(extras_input)
+    _wire_autosave(commentaires_input)
+    _wire_autosave(convives_enfants_input)
+    _wire_autosave(convives_regime_input)
     launch_btn.on("click", launch_robot)
     resume_btn.on("click", resume_robot)
     stop_btn.on("click", cancel_robot)
@@ -806,4 +969,13 @@ def create_drive_view():
             return
 
     register_tab_refresh("drive", refresh_drive)
+
+    saved_result = parse_saved_analysis(saved_ui)
+    if saved_result is not None:
+        show_results(
+            saved_result,
+            restore_rows=dict(saved_ui.get("row_states") or {}),
+            initial_platform=state.get("platform", DEFAULT_DRIVE_PLATFORM),
+        )
+
     return refresh_drive

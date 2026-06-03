@@ -17,6 +17,7 @@ INBOX_PATH: Path = ROOT_PATH / ".inbox"
 DB_PATH: Path = ROOT_PATH / "database.sqlite"
 CREDENTIALS_PATH: Path = ROOT_PATH / ".credentials" / "google_calendar"
 DRIVE_MAPPING_PATH: Path = ROOT_PATH / "drive_mapping.json"
+CURRENT_MENU_PATH: Path = ROOT_PATH / "current_menu.json"
 LECLERC_PROFILE_PATH: Path = ROOT_PATH / ".leclerc_profile"
 
 REQUIRED_DIRECTORIES: tuple[Path, ...] = (
