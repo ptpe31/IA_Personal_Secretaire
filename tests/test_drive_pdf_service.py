@@ -1,6 +1,6 @@
 """Tests export PDF planning Menu & Drive."""
 
-from app.models.drive import CourseItem, DriveMenuAnalysisResult, PlanningRepasItem
+from app.models.drive import CourseItem, DriveMenuAnalysisResult, PlanningRepasItem, escape_html
 from app.services.drive_pdf_service import render_planning_html
 
 
@@ -36,7 +36,11 @@ def test_render_planning_html_contains_data_not_template_noise():
     assert "Air Fryer 15 min" in html
     assert "Semaine du 07/06/2026" in html
     assert "Convives enfants : 4" in html
-    assert "Plat hôte régime" in html
+    assert "Enfants" in html
+    assert "Batch" in html
+    assert ">Lundi<" in html
+    assert ">Midi<" in html
+    assert ">Soir<" in html
     assert "#166534" in html
     assert "DOCTYPE html" in html
 
@@ -75,6 +79,8 @@ def test_render_planning_html_includes_regime_column():
     assert "Fajitas" in html
     assert "Salade verte, haricots verts" in html
     assert "Cuire haricots" in html
+    assert "Convives" in html
+    assert ">Mardi<" in html
 
     result = DriveMenuAnalysisResult(
         planning_repas=[
@@ -99,3 +105,38 @@ def test_render_planning_html_includes_regime_column():
     html = render_planning_html(result, semaine_label="01/01/2026")
     assert "&lt;test&gt;" in html
     assert '"spécial"' not in html
+
+
+def test_render_planning_html_unifies_duplicate_batch_per_day():
+    shared_batch = "Cuire et portionner les légumes"
+    result = DriveMenuAnalysisResult(
+        planning_repas=[
+            PlanningRepasItem(
+                jour="Mercredi",
+                moment="Midi",
+                plat="Purée",
+                batch_cooking_dimanche=shared_batch,
+                action_minute="Réchauffer",
+            )
+        ],
+        planning_regime=[
+            PlanningRepasItem(
+                jour="Mercredi",
+                moment="Midi",
+                plat="Carottes vapeur",
+                batch_cooking_dimanche=shared_batch,
+                action_minute="Servir",
+            )
+        ],
+        liste_courses=[
+            CourseItem(
+                mot_cle="carotte",
+                libelle="Carottes",
+                rayon="Fruits & Légumes",
+                quantite_recette=500,
+                unite_recette="g",
+            )
+        ],
+    )
+    html = render_planning_html(result, semaine_label="07/06/2026")
+    assert html.count(escape_html(shared_batch)) == 1

@@ -871,21 +871,32 @@ Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planni
 
 ### 8.1 Saisie
 
+**Mise en page** : trois blocs côte à côte sur une seule ligne (`col-4`, sans retour à la ligne) — **Plats enfants** | **Régime spécial (hôte additionnel)** | **Choses à ajouter** (+ commentaires).
+
 | Zone | Contenu |
 |------|---------|
 | Premier jour | Select Lundi→Dimanche — réordonne templates et checkboxes |
 | Plats enfants | Mode **Saisie manuelle** ou **Consignes IA** |
 | Convives enfants | Nombre (défaut 4) — plats |
-| Créneaux enfants | Checkboxes 14 créneaux midi/soir (manuel **et** consignes) |
-| Consignes enfants | Textarea multiligne (mode consignes) — contraintes libres pour l'IA |
-| Template repas | Textarea préfixé (14 créneaux) — saisie manuelle ou miroir post-génération |
+| Créneaux enfants | Grille 7 jours × (Midi \| Soir) — colonnes par jour, cases **M** / **S** avec infobulle (manuel **et** consignes) |
+| Consignes enfants | Textarea multiligne (mode consignes) — contraintes libres pour l'IA ; bouton **Effacer consigne pour l'IA** |
+| Template repas | Textarea préfixé — **uniquement les créneaux cochés** ; saisie manuelle ou miroir post-génération ; contenu des créneaux décochés conservé en cache |
 | Régime spécial (hôte additionnel) | Mode **Saisie manuelle** ou **Consignes IA** (défaut consignes) |
 | Convives hôte régime | Nombre (défaut 1) — menu distinct des enfants |
-| Créneaux hôte régime | Checkboxes 14 créneaux (mêmes que enfants, flux séparé) |
-| Consignes hôte régime | Textarea multiligne (mode consignes) — ex. anti-constipation, sans lactose |
-| Template hôte régime | Textarea préfixé 14 créneaux — saisie manuelle ou miroir post-génération |
+| Créneaux hôte régime | Même grille jour × (Midi \| Soir), flux séparé |
+| Consignes hôte régime | Textarea multiligne (mode consignes) — ex. anti-constipation, sans lactose ; bouton **Effacer consigne pour l'IA** |
+| Template hôte régime | Textarea préfixé — **créneaux cochés uniquement** (cache identique au flux enfants) |
 | Extras | Saisie libre (essuie-tout, couches, etc.) |
 | Commentaires | Notes libres (persistées, non envoyées à l'IA) |
+
+**Boutons d'effacement** :
+
+| Bouton | Effet |
+|--------|--------|
+| **Effacer cette colonne** (enfants / régime) | Réinitialise le template aux préfixes des créneaux cochés — ne touche ni mode, ni consignes, ni cases |
+| **Effacer consigne pour l'IA** | Vide le textarea consignes (visible en mode Consignes IA) |
+| **Effacer cette colonne** (extras) | Vide extras + commentaires |
+| **TOUT EFFACER** | Réinitialise toute la session Menu & Drive |
 
 **Deux flux repas parallèles** : mêmes créneaux horaires, menus distincts. L'hôte au régime spécial est traité comme un convive additionnel qui mange différemment (ex. enfants : fajitas ; hôte : salade verte + haricots verts).
 
@@ -909,12 +920,22 @@ Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_d
 - Factory **`get_drive_analysis_client()`** : Gemini ou OpenRouter selon `active_ia_provider` (Paramètres) — **pas Ollama, pas Mock**.
 - Repli croisé cloud si le provider choisi est indisponible.
 - Modèle Pydantic `DriveMenuAnalysisResult` : `planning_repas[]` + `planning_regime[]` (`PlanningRepasItem` : `jour`, `moment`, `plat`, `batch_cooking_dimanche`, `action_minute`) + `liste_courses[]` (`CourseItem`).
+- **Batch cooking unifié** : l'IA rédige `batch_cooking_dimanche` comme un bloc opérationnel compact par jour ; texte identique enfant/hôte lorsque la préparation dimanche est commune (affichage PDF fusionné par jour).
 - **L'IA ne génère plus de HTML** — data JSON pure uniquement ; le template HTML/CSS printanier est assemblé côté Python (`drive_pdf_service.render_planning_html`).
 - Mots-clés épurés (ex. `oeufs`, `jambon blanc`) sans packaging (`douzaine`, `en tranche`, etc.).
 - Date du planning calculée par Python (`compute_menu_week_sunday`) — injectée dans le prompt user et le PDF local.
 - Post-traitement : filtrage créneaux autorisés enfants/régime, déduplication courses, normalisation rayons/jours/moments, tri des plannings.
 
-### 8.3 Restitution interactive — tableau courses
+### 8.3 Restitution interactive
+
+Après génération IA :
+
+| Zone | Contenu |
+|------|---------|
+| Colonne gauche | **Planning Batch Cooking** — même grille HTML que le PDF (voir § 8.4) ; bouton **Imprimer / Sauvegarder en GED** |
+| Colonne droite | Tableau courses haute densité par rayon (§ 8.3.1) |
+
+#### 8.3.1 Tableau courses
 
 Après génération IA, colonne droite : tableau haute densité par rayon :
 
@@ -927,7 +948,12 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 
 ### 8.4 Export PDF
 
-- **Template HTML local** (`drive_pdf_service.py`) : une ligne par créneau fusionnant `planning_repas` et `planning_regime` — 7 colonnes (Jour | Plat enfants | Batch enfants | Action J enfants | Plat hôte régime | Batch hôte | Action J hôte). Format A4 paysage. CSS printanier fixe (#166534, #f0fdf4).
+- **Template HTML local** (`drive_pdf_service.py`) — grille **jours en colonnes**, sous-colonnes **Midi | Soir** :
+  - Ligne **Enfants** : plat + action jour J par créneau
+  - Ligne **Convives régime** : plat + action jour J par créneau (même bloc, visuellement séparé)
+  - Ligne **Batch dimanche** : un bloc unifié par jour (`colspan=2`), fusion des textes identiques enfant/hôte
+  - Seuls les jours contenant au moins un créneau planifié sont affichés
+- Même rendu à l'écran (carte Planning Batch Cooking) et en PDF. Format A4 paysage. CSS printanier fixe (#166534, #f0fdf4).
 - WeasyPrint → `~/Trankil-v2/Perso/GED/` avec nommage GED standard.
 - Prérequis macOS : `brew install pango gdk-pixbuf libffi` + `DYLD_FALLBACK_LIBRARY_PATH` dans `start.command`.
 - Modifier le look du PDF = éditer le template Python local, sans regénérer via l'IA.

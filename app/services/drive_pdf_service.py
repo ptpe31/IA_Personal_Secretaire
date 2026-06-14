@@ -9,11 +9,11 @@ from pathlib import Path
 from app import config
 from app.models.drive import (
     DriveMenuAnalysisResult,
+    PLANNING_MOMENTS,
+    PlanningJourType,
     PlanningRepasItem,
     escape_html,
-    ordered_meal_slots,
-    parse_meal_slot,
-    planning_repas_sort_key,
+    ordered_week_days,
     sort_planning_repas,
 )
 from app.utils.slugify import build_ged_filename, unique_path
@@ -51,27 +51,61 @@ table {
     border-collapse: collapse;
     background: #ffffff;
     border: 1px solid #86efac;
+    table-layout: fixed;
 }
 thead th {
     background: #166534;
     color: #ffffff;
     font-weight: 600;
-    text-align: left;
-    padding: 6px 8px;
+    text-align: center;
+    padding: 6px 6px;
     font-size: 8pt;
+    border: 1px solid #14532d;
+}
+thead th.col-audience,
+tbody td.col-audience {
+    background: #166534;
+    color: #ffffff;
+    font-weight: 600;
+    text-align: left;
+    width: 7%;
+    vertical-align: middle;
+}
+thead th.col-moment {
+    background: #15803d;
+    font-size: 7pt;
+    font-weight: 500;
 }
 tbody td {
-    padding: 5px 8px;
+    padding: 5px 6px;
     vertical-align: top;
-    border-bottom: 1px solid #dcfce7;
+    border: 1px solid #dcfce7;
     font-size: 8pt;
 }
-tbody tr:nth-child(even) td { background: #dcfce7; }
-tbody tr:nth-child(odd) td { background: #ffffff; }
-.col-jour { width: 9%; white-space: nowrap; font-weight: 600; }
-.col-plat { width: 12%; }
-.col-batch { width: 16%; }
-.col-minute { width: 16%; }
+tbody tr.row-enfants td.slot-cell { background: #ffffff; }
+tbody tr.row-regime td.slot-cell { background: #f0fdf4; }
+tbody tr.row-batch td {
+    background: #ecfdf5;
+    border-top: 2px solid #86efac;
+}
+tbody tr.row-batch td.col-audience {
+    background: #166534;
+    font-size: 7pt;
+}
+.slot-cell .plat {
+    font-weight: 600;
+    color: #14532d;
+    margin-bottom: 3px;
+}
+.slot-cell .action {
+    font-size: 7pt;
+    color: #166534;
+}
+.batch-unified {
+    font-size: 7.5pt;
+    line-height: 1.35;
+    color: #14532d;
+}
 """
 
 
@@ -84,38 +118,106 @@ def _planning_by_slot(
     return indexed
 
 
-def _merged_planning_slots(
+def _active_planning_days(
     result: DriveMenuAnalysisResult,
     *,
     premier_jour: str,
-) -> list[tuple[str, str]]:
-    enfants = {(item.jour, item.moment) for item in result.planning_repas}
-    regime = {(item.jour, item.moment) for item in result.planning_regime}
-    all_slots = enfants | regime
-    if not all_slots:
-        return []
-    ordered = []
-    for slot in ordered_meal_slots(premier_jour):
-        try:
-            key = parse_meal_slot(slot)
-        except ValueError:
-            continue
-        if key in all_slots:
-            ordered.append(key)
-    remaining = sorted(
-        all_slots - set(ordered),
-        key=lambda key: planning_repas_sort_key(
-            PlanningRepasItem(
-                jour=key[0],  # type: ignore[arg-type]
-                moment=key[1],  # type: ignore[arg-type]
-                plat="-",
-                batch_cooking_dimanche="-",
-                action_minute="-",
-            ),
-            premier_jour=premier_jour,
-        ),
+) -> tuple[PlanningJourType, ...]:
+    days_with_data: set[str] = set()
+    for item in result.planning_repas + result.planning_regime:
+        days_with_data.add(item.jour)
+    return tuple(day for day in ordered_week_days(premier_jour) if day in days_with_data)
+
+
+def _meal_cell_html(item: PlanningRepasItem | None) -> str:
+    if item is None:
+        return ""
+    plat = escape_html(item.plat)
+    action = escape_html(item.action_minute)
+    return (
+        f'<div class="plat">{plat}</div>'
+        f'<div class="action">{action}</div>'
     )
-    return ordered + remaining
+
+
+def _unified_batch_for_day(
+    jour: str,
+    *,
+    enfants_by_slot: dict[tuple[str, str], PlanningRepasItem],
+    regime_by_slot: dict[tuple[str, str], PlanningRepasItem],
+) -> str:
+    """Fusionne les batch du jour en un seul bloc (dédoublonnage)."""
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for moment in PLANNING_MOMENTS:
+        for slot_map in (enfants_by_slot, regime_by_slot):
+            item = slot_map.get((jour, moment))
+            if item is None:
+                continue
+            text = item.batch_cooking_dimanche.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            chunks.append(text)
+    return " · ".join(chunks)
+
+
+def _render_planning_grid(
+    *,
+    days: tuple[PlanningJourType, ...],
+    enfants_by_slot: dict[tuple[str, str], PlanningRepasItem],
+    regime_by_slot: dict[tuple[str, str], PlanningRepasItem],
+) -> str:
+    if not days:
+        return '<p class="meta">Aucun créneau planifié.</p>'
+
+    day_headers = "".join(
+        f'<th colspan="2">{escape_html(day)}</th>' for day in days
+    )
+    moment_headers = "".join(
+        '<th class="col-moment">Midi</th><th class="col-moment">Soir</th>' for _ in days
+    )
+
+    enfants_cells = "".join(
+        f'<td class="slot-cell">{_meal_cell_html(enfants_by_slot.get((day, "Midi")))}</td>'
+        f'<td class="slot-cell">{_meal_cell_html(enfants_by_slot.get((day, "Soir")))}</td>'
+        for day in days
+    )
+    regime_cells = "".join(
+        f'<td class="slot-cell">{_meal_cell_html(regime_by_slot.get((day, "Midi")))}</td>'
+        f'<td class="slot-cell">{_meal_cell_html(regime_by_slot.get((day, "Soir")))}</td>'
+        for day in days
+    )
+    batch_cells = "".join(
+        f'<td colspan="2" class="batch-unified">{escape_html(_unified_batch_for_day(day, enfants_by_slot=enfants_by_slot, regime_by_slot=regime_by_slot))}</td>'
+        for day in days
+    )
+
+    return f"""<table>
+    <thead>
+      <tr>
+        <th class="col-audience" rowspan="2"></th>
+        {day_headers}
+      </tr>
+      <tr>
+        {moment_headers}
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="row-enfants">
+        <td class="col-audience">Enfants</td>
+        {enfants_cells}
+      </tr>
+      <tr class="row-regime">
+        <td class="col-audience">Convives<br/>régime</td>
+        {regime_cells}
+      </tr>
+      <tr class="row-batch">
+        <td class="col-audience">Batch<br/>dimanche</td>
+        {batch_cells}
+      </tr>
+    </tbody>
+  </table>"""
 
 
 def render_planning_html(
@@ -133,23 +235,12 @@ def render_planning_html(
     regime_by_slot = _planning_by_slot(
         sort_planning_repas(result.planning_regime, premier_jour=premier_jour_semaine)
     )
-    rows: list[str] = []
-    for jour, moment in _merged_planning_slots(result, premier_jour=premier_jour_semaine):
-        creneau = f"{escape_html(jour)} {escape_html(moment)}"
-        enfant = enfants_by_slot.get((jour, moment))
-        hote = regime_by_slot.get((jour, moment))
-        rows.append(
-            "<tr>"
-            f'<td class="col-jour">{creneau}</td>'
-            f'<td class="col-plat">{escape_html(enfant.plat if enfant else "")}</td>'
-            f'<td class="col-batch">{escape_html(enfant.batch_cooking_dimanche if enfant else "")}</td>'
-            f'<td class="col-minute">{escape_html(enfant.action_minute if enfant else "")}</td>'
-            f'<td class="col-plat">{escape_html(hote.plat if hote else "")}</td>'
-            f'<td class="col-batch">{escape_html(hote.batch_cooking_dimanche if hote else "")}</td>'
-            f'<td class="col-minute">{escape_html(hote.action_minute if hote else "")}</td>'
-            "</tr>"
-        )
-    body_rows = "\n".join(rows)
+    days = _active_planning_days(result, premier_jour=premier_jour_semaine)
+    grid_html = _render_planning_grid(
+        days=days,
+        enfants_by_slot=enfants_by_slot,
+        regime_by_slot=regime_by_slot,
+    )
     meta = (
         f"Convives enfants : {nb_convives_enfants} | "
         f"Hôte régime spécial : {nb_convives_regime}"
@@ -164,22 +255,7 @@ def render_planning_html(
 <body>
   <h1>Planning Batch Cooking — Semaine du {escape_html(semaine_label)}</h1>
   <p class="meta">{escape_html(meta)}</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Jour</th>
-        <th>Plat enfants</th>
-        <th>Batch enfants</th>
-        <th>Action J enfants</th>
-        <th>Plat hôte régime</th>
-        <th>Batch hôte</th>
-        <th>Action J hôte</th>
-      </tr>
-    </thead>
-    <tbody>
-{body_rows}
-    </tbody>
-  </table>
+  {grid_html}
 </body>
 </html>"""
 

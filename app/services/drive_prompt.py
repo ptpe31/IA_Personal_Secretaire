@@ -28,6 +28,10 @@ Chaque objet contient :
 - "batch_cooking_dimanche" : préparation dimanche (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur.
 - "action_minute" : action jour J (réchauffer, assembler, accompagnement frais, cuisson rapide)
 
+BATCH COOKING UNIFIÉ : pour chaque jour, rédige batch_cooking_dimanche comme un seul bloc opérationnel compact (instructions séparées par « · » si besoin).
+Quand la préparation dimanche est commune aux enfants et à l'hôte régime sur un même jour (même ingrédient, même cuisson, même portionnage), utilise EXACTEMENT le même texte batch_cooking_dimanche pour les deux flux sur ce jour.
+Ne duplique pas inutilement des instructions identiques entre planning_repas et planning_regime.
+
 Si aucun créneau enfant n'est actif, renvoie "planning_repas": [].
 
 ═══ RÈGLE 1c — planning_regime (plats HÔTE RÉGIME SPÉCIAL, distincts des enfants) ═══
@@ -187,6 +191,7 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         f"Premier jour de la semaine : {premier_jour}",
         f"Ordre des jours à respecter : {' → '.join(week_days)}",
         "Présente le batch cooking et les actions minute en suivant cette chronologie.",
+        "Le batch cooking dimanche doit être unifié par jour lorsque la préparation est commune aux enfants et à l'hôte régime.",
         "",
         "═══ CONVIVES ENFANTS (plats) ═══",
         f"{payload.nb_convives_enfants} personnes",

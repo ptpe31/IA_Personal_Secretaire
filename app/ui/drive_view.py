@@ -35,8 +35,10 @@ from app.models.drive import (
     mirror_planning_to_meals_text,
     mirror_planning_to_regime_text,
     ordered_meal_slots,
+    ordered_week_days,
     parse_prefixed_textarea_by_prefix,
     platform_id_from_label,
+    PLANNING_MOMENTS,
 
 )
 from app.services.analysis_client import describe_analysis_engine, get_drive_analysis_client
@@ -157,7 +159,9 @@ def create_drive_view():
                         value=saved_enfants_mode,
                     ).props("inline dense").classes("q-mb-sm")
                     ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
-                    meal_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
+                    meal_checkboxes_row = ui.row().classes(
+                        "w-full wrap q-gutter-xs q-mb-sm items-start"
+                    )
                     enfants_consignes_container = ui.column().classes("w-full")
                     with enfants_consignes_container:
                         ui.label("Consignes pour l'IA").classes("text-caption text-grey-7")
@@ -193,7 +197,9 @@ def create_drive_view():
                         value=saved_regime_mode,
                     ).props("inline dense").classes("q-mb-sm")
                     ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
-                    regime_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
+                    regime_checkboxes_row = ui.row().classes(
+                        "w-full wrap q-gutter-xs q-mb-sm items-start"
+                    )
                     regime_consignes_container = ui.column().classes("w-full")
                     with regime_consignes_container:
                         ui.label("Consignes régime pour l'IA").classes("text-caption text-grey-7")
@@ -291,11 +297,19 @@ def create_drive_view():
         meal_checkboxes_row.clear()
         state["meal_checkboxes"] = {}
         with meal_checkboxes_row:
-            for slot in ordered_meal_slots(pj):
-                short = slot.replace(" midi", " M").replace(" soir", " S")
-                cb = ui.checkbox(short, value=slot in selected).props("dense")
-                state["meal_checkboxes"][slot] = cb
-                cb.on("update:model-value", lambda _: _on_meal_creneaux_change())
+            for day in ordered_week_days(pj):
+                with ui.column().classes("items-center q-gutter-y-none q-px-xs"):
+                    ui.label(day[:3]).classes(
+                        "text-caption text-weight-bold text-grey-8 q-mb-xs"
+                    )
+                    with ui.row().classes("q-gutter-xs no-wrap"):
+                        for moment in PLANNING_MOMENTS:
+                            slot = f"{day} {moment.lower()}"
+                            short = "M" if moment == "Midi" else "S"
+                            cb = ui.checkbox(short, value=slot in selected).props("dense")
+                            cb.tooltip(slot)
+                            state["meal_checkboxes"][slot] = cb
+                            cb.on("update:model-value", lambda _: _on_meal_creneaux_change())
 
     def _rebuild_regime_checkboxes() -> None:
         pj = _premier_jour()
@@ -307,12 +321,19 @@ def create_drive_view():
         regime_checkboxes_row.clear()
         state["regime_checkboxes"] = {}
         with regime_checkboxes_row:
-            for slot in ordered_meal_slots(pj):
-                short = slot.replace(" midi", " M").replace(" soir", " S")
-                cb = ui.checkbox(short, value=slot in selected).props("dense")
-                cb.tooltip(slot)
-                state["regime_checkboxes"][slot] = cb
-                cb.on("update:model-value", lambda _: _on_regime_creneaux_change())
+            for day in ordered_week_days(pj):
+                with ui.column().classes("items-center q-gutter-y-none q-px-xs"):
+                    ui.label(day[:3]).classes(
+                        "text-caption text-weight-bold text-grey-8 q-mb-xs"
+                    )
+                    with ui.row().classes("q-gutter-xs no-wrap"):
+                        for moment in PLANNING_MOMENTS:
+                            slot = f"{day} {moment.lower()}"
+                            short = "M" if moment == "Midi" else "S"
+                            cb = ui.checkbox(short, value=slot in selected).props("dense")
+                            cb.tooltip(slot)
+                            state["regime_checkboxes"][slot] = cb
+                            cb.on("update:model-value", lambda _: _on_regime_creneaux_change())
 
     def _collect_meal_creneaux_cibles() -> list[str]:
         return [slot for slot, cb in state["meal_checkboxes"].items() if cb.value]
