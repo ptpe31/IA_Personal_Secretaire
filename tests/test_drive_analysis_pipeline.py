@@ -134,9 +134,28 @@ def test_finalize_drive_analysis_filters_invented_slots():
             _sample_planning(jour="Lundi", moment="Midi", plat="Poulet rôti"),
         ]
     )
-    result = finalize_drive_analysis(data, input_plats={"Mardi soir": "épinard haché"})
+    result = finalize_drive_analysis(
+        data,
+        allowed_slots={("Mardi", "Soir")},
+    )
     assert len(result.planning_repas) == 1
     assert result.planning_repas[0].plat == "Épinards hachés"
+
+
+def test_finalize_drive_analysis_consignes_allowed_slots():
+    data = _sample_data(
+        planning_repas=[
+            _sample_planning(jour="Lundi", moment="Midi", plat="Pâtes"),
+            _sample_planning(jour="Lundi", moment="Soir", plat="Soupe"),
+            _sample_planning(jour="Mardi", moment="Midi", plat="Riz"),
+        ]
+    )
+    result = finalize_drive_analysis(
+        data,
+        allowed_slots={("Lundi", "Midi"), ("Lundi", "Soir")},
+    )
+    assert len(result.planning_repas) == 2
+    assert [p.plat for p in result.planning_repas] == ["Pâtes", "Soupe"]
 
 
 def test_filter_planning_to_input_no_filter_without_input():

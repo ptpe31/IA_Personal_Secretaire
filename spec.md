@@ -871,11 +871,32 @@ Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planni
 
 | Zone | Contenu |
 |------|---------|
-| Plats enfants | Textarea 14 lignes (Dimanche midi/soir … Samedi) avec préfixes fixes |
+| Premier jour | Select Lundi→Dimanche — réordonne templates et checkboxes |
+| Plats enfants | Mode **Saisie manuelle** ou **Consignes IA** |
 | Convives enfants | Nombre (défaut 4) — plats |
+| Consignes enfants | Textarea multiligne (autogrow) — contraintes libres pour l'IA |
+| Créneaux enfants | Checkboxes midi/soir ordonnées selon premier jour (mode consignes) |
+| Template repas | Textarea préfixé (14 créneaux) — saisie manuelle ou miroir post-génération |
+| Régime | Mode **Saisie manuelle** ou **Consignes IA** |
 | Convives régime/extras | Nombre (défaut 4) — régime et extras |
-| Régime | 7 lignes Lundi→Dimanche avec préfixes |
+| Consignes régime | Textarea multiligne — contraintes régime adulte |
+| Jours régime | Checkboxes 7 jours (mode consignes) |
+| Template régime | Textarea préfixé Lundi→Dimanche |
 | Extras | Saisie libre (essuie-tout, couches, etc.) |
+| Commentaires | Notes libres |
+
+**Modes de saisie (Enfants / Régime)** :
+
+| Mode | Comportement |
+|------|--------------|
+| Saisie manuelle | Textarea préfixé uniquement — comportement V1 |
+| Consignes IA | Consignes + jours/créneaux cochés → l'IA invente les plats/contraintes lors de la génération |
+
+**Génération consolidée** : un seul appel IA (`analyze_drive_menu`) produit planning batch cooking + liste de courses. Pas d'étape intermédiaire de validation des plats proposés. En mode consignes, les templates sont remplis automatiquement après génération (miroir persistant).
+
+**Hybride** : un créneau/jour rempli manuellement dans le template est prioritaire ; les créneaux cochés vides sont complétés par l'IA selon les consignes.
+
+**Persistance** : `~/Trankil-v2/current_menu.json` — modes, consignes, créneaux/jours cochés, templates, résultats. Bouton « Effacer cette colonne » par carte.
 
 Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_drive_menu_input`).
 

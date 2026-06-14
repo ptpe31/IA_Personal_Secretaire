@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from app.config import get_gemini_api_key, get_gemini_model
 from app.models.analysis import DocumentAnalysisResult
-from app.models.drive import DriveMenuAnalysisResult, DriveMenuInput
+from app.models.drive import DriveMenuAnalysisResult, DriveMenuInput, resolve_allowed_meal_slots
 from app.services.analysis_client import AnalysisClient
 from app.services.analysis_pipeline import finalize_document_analysis, parse_json_content
 from app.services.drive_analysis_pipeline import finalize_drive_analysis
@@ -200,12 +200,13 @@ class GeminiClient(AnalysisClient):
             raise RuntimeError("GEMINI_API_KEY non configurée.")
 
         client = genai.Client(api_key=self.api_key)
-        system_prompt = build_drive_system_prompt()
+        system_prompt = build_drive_system_prompt(payload)
         user_prompt = build_drive_user_prompt(payload)
 
         logger.info(
-            "[DRIVE-IA] Gemini — menu (%s plats, modèle=%s)",
+            "[DRIVE-IA] Gemini — menu (%s plats manuels, %s créneaux consignes, modèle=%s)",
             len(payload.plats),
+            len(payload.enfants_creneaux_cibles),
             self.model_name,
         )
         logger.debug("[DRIVE-IA] user prompt (500 car.): %s", user_prompt[:500])
@@ -230,7 +231,7 @@ class GeminiClient(AnalysisClient):
             data = parse_json_content(content)
             return finalize_drive_analysis(
                 data,
-                input_plats=payload.plats,
+                allowed_slots=resolve_allowed_meal_slots(payload),
                 premier_jour_semaine=payload.premier_jour_semaine,
             )
         except ValidationError:

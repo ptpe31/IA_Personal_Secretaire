@@ -302,29 +302,38 @@ def _allowed_planning_slots(input_plats: dict[str, str]) -> set[tuple[str, str]]
     return allowed
 
 
-def filter_planning_to_input(
+def filter_planning_to_allowed_slots(
     items: list[PlanningRepasItem],
-    input_plats: dict[str, str] | None,
+    allowed_slots: set[tuple[str, str]] | None,
 ) -> list[PlanningRepasItem]:
-    """Retire les repas inventés par l'IA hors créneaux saisis."""
-    if not input_plats:
+    """Retire les repas inventés par l'IA hors créneaux autorisés."""
+    if not allowed_slots:
         return items
-    allowed = _allowed_planning_slots(input_plats)
-    if not allowed:
-        return items
-    kept = [item for item in items if (item.jour, item.moment) in allowed]
+    kept = [item for item in items if (item.jour, item.moment) in allowed_slots]
     dropped = len(items) - len(kept)
     if dropped:
         logger.warning(
-            "[DRIVE-IA] %s créneau(x) inventé(s) par l'IA ignoré(s) (hors saisie utilisateur)",
+            "[DRIVE-IA] %s créneau(x) inventé(s) par l'IA ignoré(s) (hors créneaux autorisés)",
             dropped,
         )
     return kept
 
 
+def filter_planning_to_input(
+    items: list[PlanningRepasItem],
+    input_plats: dict[str, str] | None,
+) -> list[PlanningRepasItem]:
+    """Retire les repas inventés par l'IA hors créneaux saisis (compatibilité)."""
+    if not input_plats:
+        return items
+    allowed = _allowed_planning_slots(input_plats)
+    return filter_planning_to_allowed_slots(items, allowed or None)
+
+
 def finalize_drive_analysis(
     data: dict,
     *,
+    allowed_slots: set[tuple[str, str]] | None = None,
     input_plats: dict[str, str] | None = None,
     premier_jour_semaine: str = PREMIER_JOUR_DEFAUT,
 ) -> DriveMenuAnalysisResult:
@@ -341,7 +350,10 @@ def finalize_drive_analysis(
         if normalized is None:
             continue
         planning_items.append(PlanningRepasItem.model_validate(normalized))
-    planning_items = filter_planning_to_input(planning_items, input_plats)
+
+    if allowed_slots is None and input_plats:
+        allowed_slots = _allowed_planning_slots(input_plats) or None
+    planning_items = filter_planning_to_allowed_slots(planning_items, allowed_slots)
     if not planning_items:
         raise ValueError(
             "planning_repas vide ou invalide — aucun créneau ne correspond à la saisie utilisateur."
