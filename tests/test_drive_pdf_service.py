@@ -36,11 +36,46 @@ def test_render_planning_html_contains_data_not_template_noise():
     assert "Air Fryer 15 min" in html
     assert "Semaine du 07/06/2026" in html
     assert "Convives enfants : 4" in html
+    assert "Plat hôte régime" in html
     assert "#166534" in html
     assert "DOCTYPE html" in html
 
 
-def test_render_planning_html_escapes_special_chars():
+def test_render_planning_html_includes_regime_column():
+    result = DriveMenuAnalysisResult(
+        planning_repas=[
+            PlanningRepasItem(
+                jour="Mardi",
+                moment="Soir",
+                plat="Fajitas",
+                batch_cooking_dimanche="Mariner",
+                action_minute="Assembler",
+            )
+        ],
+        planning_regime=[
+            PlanningRepasItem(
+                jour="Mardi",
+                moment="Soir",
+                plat="Salade verte, haricots verts",
+                batch_cooking_dimanche="Cuire haricots",
+                action_minute="Assembler salade",
+            )
+        ],
+        liste_courses=[
+            CourseItem(
+                mot_cle="haricots",
+                libelle="Haricots verts",
+                rayon="Fruits & Légumes",
+                quantite_recette=400,
+                unite_recette="g",
+            )
+        ],
+    )
+    html = render_planning_html(result, semaine_label="07/06/2026")
+    assert "Fajitas" in html
+    assert "Salade verte, haricots verts" in html
+    assert "Cuire haricots" in html
+
     result = DriveMenuAnalysisResult(
         planning_repas=[
             PlanningRepasItem(

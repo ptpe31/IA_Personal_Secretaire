@@ -264,7 +264,8 @@ def _extract_unite_paquet(
 
 
 class DriveMenuAnalysisResult(BaseModel):
-    planning_repas: list[PlanningRepasItem] = Field(..., min_length=1)
+    planning_repas: list[PlanningRepasItem] = Field(default_factory=list)
+    planning_regime: list[PlanningRepasItem] = Field(default_factory=list)
     liste_courses: list[CourseItem] = Field(..., min_length=1)
 
 
@@ -307,7 +308,7 @@ DriveSaisieMode = Literal["manual", "consignes"]
 @dataclass
 class DriveMenuInput:
     plats: dict[str, str] = field(default_factory=dict)
-    regime: dict[str, str] = field(default_factory=dict)
+    regime_plats: dict[str, str] = field(default_factory=dict)
     extras: str = ""
     nb_convives_enfants: int = 4
     nb_convives_regime: int = 4
@@ -316,7 +317,7 @@ class DriveMenuInput:
     enfants_consignes: str = ""
     enfants_creneaux_cibles: list[str] = field(default_factory=list)
     regime_consignes: str = ""
-    regime_jours_cibles: list[str] = field(default_factory=list)
+    regime_creneaux_cibles: list[str] = field(default_factory=list)
 
 
 def _strip_prefixed_line(raw: str, prefix: str) -> str | None:
@@ -368,6 +369,28 @@ def _slots_from_keys(keys: list[str], *, valid: tuple[str, ...]) -> list[str]:
     return [key for key in keys if key in valid_set]
 
 
+def migrate_regime_creneaux_cibles(
+    raw: list[str] | None,
+    *,
+    premier_jour: str = PREMIER_JOUR_DEFAUT,
+) -> list[str]:
+    """Migration : anciens jours (« Lundi ») → créneaux midi+soir."""
+    if not raw:
+        return []
+    meal_slots = set(ordered_meal_slots(premier_jour))
+    migrated: list[str] = []
+    for key in raw:
+        if key in meal_slots:
+            migrated.append(key)
+            continue
+        if key in REGIME_DAYS or key in JOURS_ORDRE_ABSOLU:
+            for moment in PLANNING_MOMENTS:
+                slot = f"{key} {moment.lower()}"
+                if slot in meal_slots:
+                    migrated.append(slot)
+    return _slots_from_keys(migrated, valid=tuple(meal_slots))
+
+
 def build_drive_menu_input(
     meal_values: dict[str, str],
     regime_values: dict[str, str],
@@ -379,35 +402,43 @@ def build_drive_menu_input(
     enfants_consignes: str = "",
     enfants_creneaux_cibles: list[str] | None = None,
     regime_consignes: str = "",
-    regime_jours_cibles: list[str] | None = None,
+    regime_creneaux_cibles: list[str] | None = None,
 ) -> DriveMenuInput:
     pj = premier_jour_semaine if premier_jour_semaine in JOURS_ORDRE_ABSOLU else PREMIER_JOUR_DEFAUT
     meal_slots = ordered_meal_slots(pj)
-    regime_days = ordered_regime_days(pj)
+    creneaux_enfants = _slots_from_keys(list(enfants_creneaux_cibles or []), valid=meal_slots)
+    creneaux_regime = migrate_regime_creneaux_cibles(
+        list(regime_creneaux_cibles or []), premier_jour=pj
+    )
+    checked_enfants = set(creneaux_enfants) if creneaux_enfants else set(meal_slots)
+    checked_regime = set(creneaux_regime) if creneaux_regime else set()
+
     plats = {
         slot: cleaned
         for slot in meal_slots
-        if slot in meal_values and (cleaned := _strip_prefixed_line(meal_values[slot], MEAL_PREFIXES[slot]))
+        if slot in checked_enfants
+        and slot in meal_values
+        and (cleaned := _strip_prefixed_line(meal_values[slot], MEAL_PREFIXES[slot]))
     }
-    regime = {
-        day: cleaned
-        for day in regime_days
-        if day in regime_values and (cleaned := _strip_prefixed_line(regime_values[day], REGIME_PREFIXES[day]))
+    regime_plats = {
+        slot: cleaned
+        for slot in meal_slots
+        if slot in checked_regime
+        and slot in regime_values
+        and (cleaned := _strip_prefixed_line(regime_values[slot], MEAL_PREFIXES[slot]))
     }
-    creneaux = _slots_from_keys(list(enfants_creneaux_cibles or []), valid=meal_slots)
-    jours_regime = _slots_from_keys(list(regime_jours_cibles or []), valid=regime_days)
     return DriveMenuInput(
         plats=plats,
-        regime=regime,
+        regime_plats=regime_plats,
         extras=extras.strip(),
         nb_convives_enfants=max(1, int(nb_convives_enfants)),
         nb_convives_regime=max(1, int(nb_convives_regime)),
         semaine_reference=compute_menu_week_sunday(),
         premier_jour_semaine=pj,  # type: ignore[arg-type]
         enfants_consignes=(enfants_consignes or "").strip(),
-        enfants_creneaux_cibles=creneaux,
+        enfants_creneaux_cibles=creneaux_enfants,
         regime_consignes=(regime_consignes or "").strip(),
-        regime_jours_cibles=jours_regime,
+        regime_creneaux_cibles=creneaux_regime,
     )
 
 
@@ -416,7 +447,11 @@ def has_enfants_consignes(payload: DriveMenuInput) -> bool:
 
 
 def has_regime_consignes(payload: DriveMenuInput) -> bool:
-    return bool(payload.regime_consignes) and bool(payload.regime_jours_cibles)
+    return bool(payload.regime_consignes) and bool(payload.regime_creneaux_cibles)
+
+
+def has_regime_content(payload: DriveMenuInput) -> bool:
+    return bool(payload.regime_plats) or has_regime_consignes(payload)
 
 
 def resolve_allowed_meal_slots(payload: DriveMenuInput) -> set[tuple[str, str]] | None:
@@ -442,12 +477,39 @@ def resolve_allowed_meal_slots(payload: DriveMenuInput) -> set[tuple[str, str]] 
     return allowed or None
 
 
+def resolve_allowed_regime_slots(payload: DriveMenuInput) -> set[tuple[str, str]] | None:
+    """Créneaux hôte régime : saisie manuelle + cibles consignes non couvertes manuellement."""
+    allowed: set[tuple[str, str]] = set()
+    manual_slots = set(payload.regime_plats.keys())
+
+    for slot in payload.regime_plats:
+        try:
+            allowed.add(parse_meal_slot(slot))
+        except ValueError:
+            continue
+
+    if has_regime_consignes(payload):
+        for slot in payload.regime_creneaux_cibles:
+            if slot in manual_slots:
+                continue
+            try:
+                allowed.add(parse_meal_slot(slot))
+            except ValueError:
+                continue
+
+    return allowed or None
+
+
 def drive_menu_input_has_generatable_content(payload: DriveMenuInput) -> bool:
     if payload.extras.strip():
         return True
     if payload.plats:
         return True
     if has_enfants_consignes(payload):
+        return True
+    if payload.regime_plats:
+        return True
+    if has_regime_consignes(payload):
         return True
     return False
 
@@ -467,22 +529,19 @@ def mirror_planning_to_meals_text(
     return format_prefixed_textarea(values, ordered_meal_slots(premier_jour))
 
 
-def mirror_regime_consignes_to_text(
+def mirror_planning_to_regime_text(
+    result: DriveMenuAnalysisResult,
     *,
     premier_jour: str,
     existing_values: dict[str, str],
-    regime_consignes: str,
-    regime_jours_cibles: list[str],
 ) -> str:
-    """Persiste les consignes régime sur les jours cochés."""
+    """Réinjecte les plats hôte régime générés dans le template préfixé."""
     values = dict(existing_values)
-    text = regime_consignes.strip()
-    if not text:
-        return format_prefixed_textarea(values, ordered_regime_days(premier_jour))
-    for day in regime_jours_cibles:
-        if day in REGIME_PREFIXES:
-            values[day] = f"{REGIME_PREFIXES[day]}{text}"
-    return format_prefixed_textarea(values, ordered_regime_days(premier_jour))
+    for item in result.planning_regime:
+        slot = f"{item.jour} {item.moment.lower()}"
+        if slot in MEAL_PREFIXES:
+            values[slot] = f"{MEAL_PREFIXES[slot]}{item.plat}"
+    return format_prefixed_textarea(values, ordered_meal_slots(premier_jour))
 
 
 def default_meal_textarea_value(premier_jour: str = PREMIER_JOUR_DEFAUT) -> str:
@@ -490,4 +549,4 @@ def default_meal_textarea_value(premier_jour: str = PREMIER_JOUR_DEFAUT) -> str:
 
 
 def default_regime_textarea_value(premier_jour: str = PREMIER_JOUR_DEFAUT) -> str:
-    return "\n".join(REGIME_PREFIXES[day] for day in ordered_regime_days(premier_jour))
+    return default_meal_textarea_value(premier_jour)

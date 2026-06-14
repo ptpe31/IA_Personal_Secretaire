@@ -126,6 +126,32 @@ def test_finalize_drive_analysis_rejects_empty_planning():
         finalize_drive_analysis(_sample_data(planning_repas=[]))
 
 
+def test_finalize_drive_analysis_filters_regime_slots():
+    data = _sample_data(
+        planning_repas=[],
+        planning_regime=[
+            _sample_planning(jour="Mardi", moment="Soir", plat="Salade verte"),
+            _sample_planning(jour="Lundi", moment="Midi", plat="Haricots"),
+        ],
+    )
+    result = finalize_drive_analysis(
+        data,
+        allowed_regime_slots={("Mardi", "Soir")},
+    )
+    assert len(result.planning_regime) == 1
+    assert result.planning_regime[0].plat == "Salade verte"
+
+
+def test_finalize_drive_analysis_regime_only():
+    data = _sample_data(
+        planning_repas=[],
+        planning_regime=[_sample_planning(plat="Salade")],
+    )
+    result = finalize_drive_analysis(data)
+    assert len(result.planning_regime) == 1
+    assert not result.planning_repas
+
+
 def test_finalize_drive_analysis_filters_invented_slots():
     data = _sample_data(
         planning_repas=[

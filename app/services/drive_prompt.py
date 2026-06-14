@@ -7,26 +7,34 @@ from app.models.drive import (
     MEAL_SLOTS,
     has_enfants_consignes,
     has_regime_consignes,
+    has_regime_content,
     ordered_meal_slots,
-    ordered_regime_days,
     ordered_week_days,
     parse_meal_slot,
 )
 
 DRIVE_SYSTEM_PROMPT_BASE = """Tu es un chef de famille et expert en batch cooking pour une famille française.
-Ta mission : transformer un menu hebdomadaire en (1) un planning batch cooking structuré et (2) une liste de courses détaillée (besoins culinaires précis).
+Ta mission : transformer un menu hebdomadaire en (1) un planning batch cooking structuré pour les enfants, (2) un planning distinct pour l'hôte au régime spécial, et (3) une liste de courses détaillée (besoins culinaires précis).
 
 RÉPONDS UNIQUEMENT en JSON valide. Aucun texte avant ou après le JSON. Aucun markdown. Aucun commentaire.
 INTERDICTION ABSOLUE : pas de réflexion, pas de commentaire, pas de champ supplémentaire, AUCUN code HTML/CSS.
-Le JSON doit contenir EXACTEMENT 2 clés racine : "planning_repas" et "liste_courses".
+Le JSON doit contenir EXACTEMENT 3 clés racine : "planning_repas", "planning_regime" et "liste_courses".
 
-═══ RÈGLE 1 — planning_repas (data pure, zéro balise HTML) ═══
+═══ RÈGLE 1 — planning_repas (plats ENFANTS, data pure, zéro balise HTML) ═══
 Chaque objet contient :
 - "jour" : EXACTEMENT l'une des valeurs : "Dimanche" | "Lundi" | "Mardi" | "Mercredi" | "Jeudi" | "Vendredi" | "Samedi"
 - "moment" : "Midi" ou "Soir" — doit correspondre au créneau (ex. « Mardi soir » → jour "Mardi", moment "Soir")
-- "plat" : nom du plat pour ce créneau
+- "plat" : nom du plat ENFANT pour ce créneau (attractif pour les enfants)
 - "batch_cooking_dimanche" : préparation dimanche (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur.
 - "action_minute" : action jour J (réchauffer, assembler, accompagnement frais, cuisson rapide)
+
+Si aucun créneau enfant n'est actif, renvoie "planning_repas": [].
+
+═══ RÈGLE 1c — planning_regime (plats HÔTE RÉGIME SPÉCIAL, distincts des enfants) ═══
+Même structure que planning_repas. Chaque objet = un plat pour l'hôte additionnel au régime spécial sur un créneau autorisé.
+Les plats régime doivent être DIFFÉRENTS des plats enfants et respecter les contraintes régime (allergies, anti-constipation, sans lactose, etc.).
+Inclure batch_cooking_dimanche et action_minute pour chaque plat régime.
+Si aucun créneau régime n'est actif, renvoie "planning_regime": [].
 
 Chronologie : respecte l'ordre des jours indiqué dans « CHRONOLOGIE DE LA SEMAINE » du prompt utilisateur (premier jour → fin de semaine). Le batch cooking doit suivre cette progression.
 
@@ -52,10 +60,10 @@ Exemples :
 - 12 œufs → quantite_recette: 12, unite_recette: "u"
 - 200 g de jambon → quantite_recette: 200, unite_recette: "g"
 
-Règles quantités : adapter aux convives enfants et convives régime/extras (base 4 chacun), fusionner doublons (même mot_cle + même unite_recette), inclure extras, exclure sel/poivre/huile/eau sauf si demandé.
+Règles quantités : adapter aux convives enfants (planning_repas) et convives hôte régime (planning_regime), fusionner doublons (même mot_cle + même unite_recette), inclure extras, exclure sel/poivre/huile/eau sauf si demandé.
 
 ═══ RÈGLE 3 — Cohérence menu ↔ courses ═══
-Couvrir uniquement les plats des créneaux autorisés, respecter le régime quotidien saisi ou généré, plats enfants prioritaires.
+Couvrir les plats des créneaux autorisés enfants ET hôte régime. Les deux flux sont indépendants mais leurs ingrédients fusionnent dans liste_courses.
 
 ═══ RÈGLE 4 — JSON strict ═══
 Pas de trailing comma. Pas de champs supplémentaires. Pas de HTML.
@@ -69,6 +77,13 @@ Structure JSON STRICTE :
     "batch_cooking_dimanche": "Découper les blancs, mariner dans les épices",
     "action_minute": "Cuire à l'Air Fryer 15 min, réchauffer la sauce"
   }],
+  "planning_regime": [{
+    "jour": "Lundi",
+    "moment": "Midi",
+    "plat": "Salade verte, haricots verts",
+    "batch_cooking_dimanche": "Cuire et portionner les haricots",
+    "action_minute": "Assembler la salade"
+  }],
   "liste_courses": [{
     "mot_cle": "lait entier",
     "libelle": "lait entier UHT",
@@ -79,25 +94,32 @@ Structure JSON STRICTE :
 }"""
 
 DRIVE_SYSTEM_PROMPT_MANUAL_SLOTS = """
-═══ RÈGLE 1a — Mode saisie manuelle (créneaux explicites) ═══
-Génère UNIQUEMENT un objet pour chaque créneau EXPLICITEMENT listé dans « PLATS ENFANTS » du prompt utilisateur.
+═══ RÈGLE 1a — Mode saisie manuelle ENFANTS (créneaux explicites) ═══
+Génère UNIQUEMENT un objet planning_repas pour chaque créneau EXPLICITEMENT listé dans « PLATS ENFANTS » du prompt utilisateur.
 INTERDICTION ABSOLUE : ne complète pas les créneaux vides, n'invente pas de repas pour les jours non saisis.
-Ne fusionne pas les lignes : un objet par créneau saisi.
-Ne liste que les ingrédients des plats EXPLICITEMENT saisis + extras + suppléments régime."""
+Ne fusionne pas les lignes : un objet par créneau saisi."""
 
 DRIVE_SYSTEM_PROMPT_CONSIGNES = """
-═══ RÈGLE 1b — Mode consignes IA (créneaux cibles) ═══
-Pour chaque créneau listé dans « CRÉNEAUX À GÉNÉRER (consignes IA) », invente un plat adapté aux consignes enfants, au nombre de convives et à la chronologie de la semaine.
+═══ RÈGLE 1b — Mode consignes IA ENFANTS (créneaux cibles) ═══
+Pour chaque créneau listé dans « CRÉNEAUX ENFANTS À GÉNÉRER (consignes IA) », invente un plat ENFANT attractif, adapté aux consignes, au nombre de convives et à la chronologie de la semaine.
 Respecte strictement les contraintes alimentaires des consignes (allergies, interdits, préférences).
 Les créneaux déjà renseignés manuellement dans « PLATS ENFANTS » sont prioritaires : reprends-les tels quels, ne les remplace pas.
-Génère planning_repas et ingrédients UNIQUEMENT pour les créneaux autorisés (manuels + cibles consignes).
-Ne génère AUCUN repas hors de cette liste."""
+Génère planning_repas UNIQUEMENT pour les créneaux autorisés (manuels + cibles consignes).
+Ne génère AUCUN repas enfant hors de cette liste."""
+
+DRIVE_SYSTEM_PROMPT_REGIME_MANUAL = """
+═══ RÈGLE 1d — Mode saisie manuelle HÔTE RÉGIME (créneaux explicites) ═══
+Génère UNIQUEMENT un objet planning_regime pour chaque créneau EXPLICITEMENT listé dans « PLATS HÔTE RÉGIME ».
+Chaque plat régime doit être distinct des plats enfants du même créneau et respecter les contraintes saisies.
+Ne complète pas les créneaux vides."""
 
 DRIVE_SYSTEM_PROMPT_REGIME_CONSIGNES = """
-═══ RÈGLE 3b — Régime par consignes IA ═══
-Pour chaque jour listé dans « JOURS RÉGIME À GÉNÉRER », déduis la contrainte régime adulte quotidienne à partir des consignes régime.
-Intègre les suppléments ou substitutions régime dans liste_courses (ex. alternatives sans lactose, protéines spécifiques).
-Les jours déjà renseignés manuellement dans « RÉGIME ADULTE » sont prioritaires."""
+═══ RÈGLE 1e — Mode consignes IA HÔTE RÉGIME (créneaux cibles) ═══
+Pour chaque créneau listé dans « CRÉNEAUX RÉGIME À GÉNÉRER (consignes IA) », invente un plat DISTINCT pour l'hôte au régime spécial, adapté aux consignes régime (ex. anti-constipation, sans lactose).
+Inclure batch_cooking_dimanche et action_minute pour chaque plat régime.
+Les créneaux déjà renseignés manuellement dans « PLATS HÔTE RÉGIME » sont prioritaires.
+Génère planning_regime UNIQUEMENT pour les créneaux autorisés (manuels + cibles consignes).
+Intègre les ingrédients régime dans liste_courses (quantités pour convives hôte régime)."""
 
 
 def build_drive_system_prompt(payload: DriveMenuInput | None = None) -> str:
@@ -108,7 +130,35 @@ def build_drive_system_prompt(payload: DriveMenuInput | None = None) -> str:
         parts.append(DRIVE_SYSTEM_PROMPT_MANUAL_SLOTS)
     if payload is not None and has_regime_consignes(payload):
         parts.append(DRIVE_SYSTEM_PROMPT_REGIME_CONSIGNES)
+    elif payload is not None and payload.regime_plats:
+        parts.append(DRIVE_SYSTEM_PROMPT_REGIME_MANUAL)
     return "\n".join(parts)
+
+
+def _append_slot_constraints(
+    lines: list[str],
+    *,
+    slot_order: tuple[str, ...],
+    manual_keys: set[str],
+    consignes_targets: list[str],
+    label: str,
+) -> None:
+    allowed_count = len(manual_keys) + len(consignes_targets)
+    if not allowed_count:
+        return
+    lines += [
+        "",
+        f"═══ CONTRAINTE CRÉNEAUX {label} (strict) ═══",
+        f"{allowed_count} créneau(x) autorisé(s) sur {len(MEAL_SLOTS)}.",
+    ]
+    for slot in slot_order:
+        if slot not in manual_keys and slot not in consignes_targets:
+            continue
+        try:
+            jour, moment = parse_meal_slot(slot)
+            lines.append(f"  → autoriser : jour={jour!r}, moment={moment!r}")
+        except ValueError:
+            lines.append(f"  → créneau : {slot!r}")
 
 
 def build_drive_user_prompt(payload: DriveMenuInput) -> str:
@@ -116,19 +166,18 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
     premier_jour = payload.premier_jour_semaine
     week_days = ordered_week_days(premier_jour)
     slot_order = ordered_meal_slots(premier_jour)
-    regime_order = ordered_regime_days(premier_jour)
     manual_slots = set(payload.plats.keys())
     consignes_targets = [
         slot for slot in payload.enfants_creneaux_cibles if slot not in manual_slots
     ]
-    manual_regime_days = set(payload.regime.keys())
+    manual_regime_slots = set(payload.regime_plats.keys())
     regime_targets = [
-        day for day in payload.regime_jours_cibles if day not in manual_regime_days
+        slot for slot in payload.regime_creneaux_cibles if slot not in manual_regime_slots
     ]
 
     lines = [
         "Analyse ce menu hebdomadaire et génère le planning batch cooking structuré "
-        "(planning_repas en JSON pur, sans HTML) "
+        "(planning_repas + planning_regime en JSON pur, sans HTML) "
         "+ la liste de courses (besoins culinaires en unités standardisées g/kg/ml/L/u).",
         "",
         "═══ DATE DU PLANNING ═══",
@@ -142,8 +191,8 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         "═══ CONVIVES ENFANTS (plats) ═══",
         f"{payload.nb_convives_enfants} personnes",
         "",
-        "═══ CONVIVES RÉGIME / EXTRAS ═══",
-        f"{payload.nb_convives_regime} personnes",
+        "═══ CONVIVES HÔTE RÉGIME SPÉCIAL ═══",
+        f"{payload.nb_convives_regime} personne(s) — menu distinct des enfants",
         "",
         "═══ PLATS ENFANTS (prioritaires) ═══",
     ]
@@ -159,54 +208,54 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
             "═══ CONSIGNES ENFANTS (IA) ═══",
             payload.enfants_consignes,
             "",
-            "═══ CRÉNEAUX À GÉNÉRER (consignes IA) ═══",
+            "═══ CRÉNEAUX ENFANTS À GÉNÉRER (consignes IA) ═══",
         ]
         for slot in consignes_targets:
             lines.append(f"  → {slot}")
         if not consignes_targets:
             lines.append("(tous les créneaux cochés sont déjà renseignés manuellement)")
 
-    allowed_count = len(payload.plats) + len(consignes_targets)
-    if allowed_count:
-        lines += [
-            "",
-            "═══ CONTRAINTE CRÉNEAUX (strict) ═══",
-            f"{allowed_count} créneau(x) autorisé(s) sur {len(MEAL_SLOTS)} — "
-            "planning_repas et liste_courses UNIQUEMENT pour ces créneaux.",
-        ]
-        for slot in slot_order:
-            if slot not in payload.plats and slot not in consignes_targets:
-                continue
-            try:
-                jour, moment = parse_meal_slot(slot)
-                lines.append(f"  → autoriser : jour={jour!r}, moment={moment!r}")
-            except ValueError:
-                lines.append(f"  → créneau : {slot!r}")
-        lines.append("Ne génère AUCUN autre repas ni ingrédient pour les créneaux non listés ci-dessus.")
-    elif not has_enfants_consignes(payload):
-        lines.append("(aucun créneau repas — extras seuls si fournis)")
+    _append_slot_constraints(
+        lines,
+        slot_order=slot_order,
+        manual_keys=manual_slots,
+        consignes_targets=consignes_targets,
+        label="ENFANTS",
+    )
 
-    lines += ["", "═══ RÉGIME ADULTE (supplément par jour) ═══"]
-    for day in regime_order:
-        if day in payload.regime:
-            lines.append(f"{day} : {payload.regime[day]}")
-    if not payload.regime:
-        lines.append("(aucune contrainte régime saisie manuellement)")
+    lines += ["", "═══ PLATS HÔTE RÉGIME (prioritaires) ═══"]
+    for slot in slot_order:
+        if slot in payload.regime_plats:
+            lines.append(f"{slot} : {payload.regime_plats[slot]}")
+    if not payload.regime_plats:
+        lines.append("(aucun plat hôte régime saisi manuellement)")
 
     if has_regime_consignes(payload):
         lines += [
             "",
-            "═══ CONSIGNES RÉGIME (IA) ═══",
+            "═══ CONSIGNES HÔTE RÉGIME (IA) ═══",
             payload.regime_consignes,
             "",
-            "═══ JOURS RÉGIME À GÉNÉRER (consignes IA) ═══",
+            "═══ CRÉNEAUX RÉGIME À GÉNÉRER (consignes IA) ═══",
         ]
-        for day in regime_targets:
-            lines.append(f"  → {day}")
+        for slot in regime_targets:
+            lines.append(f"  → {slot}")
         if not regime_targets:
-            lines.append("(tous les jours cochés sont déjà renseignés manuellement)")
+            lines.append("(tous les créneaux cochés sont déjà renseignés manuellement)")
+
+    if has_regime_content(payload):
+        _append_slot_constraints(
+            lines,
+            slot_order=slot_order,
+            manual_keys=manual_regime_slots,
+            consignes_targets=regime_targets,
+            label="HÔTE RÉGIME",
+        )
 
     lines += ["", "═══ EXTRAS (hors menu, à ajouter à la liste) ═══"]
     lines.append(payload.extras if payload.extras else "(aucun extra)")
-    lines += ["", "JSON strict uniquement — planning_repas + liste_courses, sans HTML."]
+    lines += [
+        "",
+        "JSON strict uniquement — planning_repas + planning_regime + liste_courses, sans HTML.",
+    ]
     return "\n".join(lines)

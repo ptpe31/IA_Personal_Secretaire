@@ -7,7 +7,15 @@ from datetime import date
 from pathlib import Path
 
 from app import config
-from app.models.drive import DriveMenuAnalysisResult, escape_html, sort_planning_repas
+from app.models.drive import (
+    DriveMenuAnalysisResult,
+    PlanningRepasItem,
+    escape_html,
+    ordered_meal_slots,
+    parse_meal_slot,
+    planning_repas_sort_key,
+    sort_planning_repas,
+)
 from app.utils.slugify import build_ged_filename, unique_path
 
 logger = logging.getLogger(__name__)
@@ -19,24 +27,24 @@ _WEASYPRINT_HINT = (
 )
 
 _PLANNING_CSS = """
-@page { size: A4; margin: 14mm; }
+@page { size: A4 landscape; margin: 10mm; }
 body {
     font-family: Arial, Helvetica, sans-serif;
-    font-size: 11pt;
+    font-size: 9pt;
     color: #14532d;
     background: #f0fdf4;
     margin: 0;
     padding: 0;
 }
 h1 {
-    font-size: 18pt;
+    font-size: 16pt;
     color: #166534;
     margin: 0 0 8px 0;
 }
 .meta {
-    font-size: 10pt;
+    font-size: 9pt;
     color: #166534;
-    margin: 0 0 16px 0;
+    margin: 0 0 12px 0;
 }
 table {
     width: 100%;
@@ -49,22 +57,65 @@ thead th {
     color: #ffffff;
     font-weight: 600;
     text-align: left;
-    padding: 8px 10px;
-    font-size: 10pt;
+    padding: 6px 8px;
+    font-size: 8pt;
 }
 tbody td {
-    padding: 7px 10px;
+    padding: 5px 8px;
     vertical-align: top;
     border-bottom: 1px solid #dcfce7;
-    font-size: 10pt;
+    font-size: 8pt;
 }
 tbody tr:nth-child(even) td { background: #dcfce7; }
 tbody tr:nth-child(odd) td { background: #ffffff; }
-.col-jour { width: 14%; white-space: nowrap; font-weight: 600; }
-.col-plat { width: 22%; }
-.col-batch { width: 32%; }
-.col-minute { width: 32%; }
+.col-jour { width: 9%; white-space: nowrap; font-weight: 600; }
+.col-plat { width: 12%; }
+.col-batch { width: 16%; }
+.col-minute { width: 16%; }
 """
+
+
+def _planning_by_slot(
+    items: list[PlanningRepasItem],
+) -> dict[tuple[str, str], PlanningRepasItem]:
+    indexed: dict[tuple[str, str], PlanningRepasItem] = {}
+    for item in items:
+        indexed[(item.jour, item.moment)] = item
+    return indexed
+
+
+def _merged_planning_slots(
+    result: DriveMenuAnalysisResult,
+    *,
+    premier_jour: str,
+) -> list[tuple[str, str]]:
+    enfants = {(item.jour, item.moment) for item in result.planning_repas}
+    regime = {(item.jour, item.moment) for item in result.planning_regime}
+    all_slots = enfants | regime
+    if not all_slots:
+        return []
+    ordered = []
+    for slot in ordered_meal_slots(premier_jour):
+        try:
+            key = parse_meal_slot(slot)
+        except ValueError:
+            continue
+        if key in all_slots:
+            ordered.append(key)
+    remaining = sorted(
+        all_slots - set(ordered),
+        key=lambda key: planning_repas_sort_key(
+            PlanningRepasItem(
+                jour=key[0],  # type: ignore[arg-type]
+                moment=key[1],  # type: ignore[arg-type]
+                plat="-",
+                batch_cooking_dimanche="-",
+                action_minute="-",
+            ),
+            premier_jour=premier_jour,
+        ),
+    )
+    return ordered + remaining
 
 
 def render_planning_html(
@@ -76,24 +127,32 @@ def render_planning_html(
     premier_jour_semaine: str = "Lundi",
 ) -> str:
     """Assemble le HTML imprimable à partir des données structurées (sans IA)."""
+    enfants_by_slot = _planning_by_slot(
+        sort_planning_repas(result.planning_repas, premier_jour=premier_jour_semaine)
+    )
+    regime_by_slot = _planning_by_slot(
+        sort_planning_repas(result.planning_regime, premier_jour=premier_jour_semaine)
+    )
     rows: list[str] = []
-    for item in sort_planning_repas(
-        result.planning_repas, premier_jour=premier_jour_semaine
-    ):
-        creneau = f"{escape_html(item.jour)} {escape_html(item.moment)}"
+    for jour, moment in _merged_planning_slots(result, premier_jour=premier_jour_semaine):
+        creneau = f"{escape_html(jour)} {escape_html(moment)}"
+        enfant = enfants_by_slot.get((jour, moment))
+        hote = regime_by_slot.get((jour, moment))
         rows.append(
             "<tr>"
             f'<td class="col-jour">{creneau}</td>'
-            f'<td class="col-plat">{escape_html(item.plat)}</td>'
-            f'<td class="col-batch">{escape_html(item.batch_cooking_dimanche)}</td>'
-            f'<td class="col-minute">{escape_html(item.action_minute)}</td>'
+            f'<td class="col-plat">{escape_html(enfant.plat if enfant else "")}</td>'
+            f'<td class="col-batch">{escape_html(enfant.batch_cooking_dimanche if enfant else "")}</td>'
+            f'<td class="col-minute">{escape_html(enfant.action_minute if enfant else "")}</td>'
+            f'<td class="col-plat">{escape_html(hote.plat if hote else "")}</td>'
+            f'<td class="col-batch">{escape_html(hote.batch_cooking_dimanche if hote else "")}</td>'
+            f'<td class="col-minute">{escape_html(hote.action_minute if hote else "")}</td>'
             "</tr>"
         )
     body_rows = "\n".join(rows)
     meta = (
         f"Convives enfants : {nb_convives_enfants} | "
-        f"Convives régime/extras : {nb_convives_regime} | "
-        "Régime pris en compte"
+        f"Hôte régime spécial : {nb_convives_regime}"
     )
     return f"""<!DOCTYPE html>
 <html lang="fr">
@@ -109,9 +168,12 @@ def render_planning_html(
     <thead>
       <tr>
         <th>Jour</th>
-        <th>Plat</th>
-        <th>Batch Cooking (Dimanche)</th>
-        <th>Action Minute</th>
+        <th>Plat enfants</th>
+        <th>Batch enfants</th>
+        <th>Action J enfants</th>
+        <th>Plat hôte régime</th>
+        <th>Batch hôte</th>
+        <th>Action J hôte</th>
       </tr>
     </thead>
     <tbody>

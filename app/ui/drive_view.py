@@ -15,6 +15,7 @@ from app.models.drive import (
     DRIVE_PLATFORMS,
     DEFAULT_DRIVE_PLATFORM,
     JOURS_ORDRE_ABSOLU,
+    MEAL_PREFIXES,
     PREMIER_JOUR_DEFAUT,
     RAYON_ORDER,
     UNITE_MESURE_OPTIONS,
@@ -22,9 +23,6 @@ from app.models.drive import (
     DriveMenuAnalysisResult,
     DrivePlatformId,
     DriveShoppingItem,
-    MEAL_PREFIXES,
-    MEAL_SLOTS,
-    REGIME_PREFIXES,
     build_drive_menu_input,
     default_meal_textarea_value,
     default_regime_textarea_value,
@@ -33,10 +31,10 @@ from app.models.drive import (
     format_article_display,
     format_besoin,
     format_prefixed_textarea,
+    migrate_regime_creneaux_cibles,
     mirror_planning_to_meals_text,
-    mirror_regime_consignes_to_text,
+    mirror_planning_to_regime_text,
     ordered_meal_slots,
-    ordered_regime_days,
     parse_prefixed_textarea_by_prefix,
     platform_id_from_label,
 
@@ -107,20 +105,26 @@ def create_drive_view():
         return list(ordered_meal_slots(premier_jour))
 
     def _default_regime_selection(premier_jour: str) -> list[str]:
-        return list(ordered_regime_days(premier_jour))
+        return list(ordered_meal_slots(premier_jour))
 
     saved_enfants_mode = saved_ui.get("enfants_mode", "manual")
     if saved_enfants_mode not in ("manual", "consignes"):
         saved_enfants_mode = "manual"
-    saved_regime_mode = saved_ui.get("regime_mode", "manual")
+    saved_regime_mode = saved_ui.get("regime_mode", "consignes")
     if saved_regime_mode not in ("manual", "consignes"):
-        saved_regime_mode = "manual"
+        saved_regime_mode = "consignes"
     saved_meal_creneaux = saved_ui.get("enfants_creneaux_cibles")
     if not isinstance(saved_meal_creneaux, list):
         saved_meal_creneaux = _default_creneaux_selection(saved_premier_jour)
-    saved_regime_jours = saved_ui.get("regime_jours_cibles")
-    if not isinstance(saved_regime_jours, list):
-        saved_regime_jours = _default_regime_selection(saved_premier_jour)
+    saved_regime_creneaux = saved_ui.get("regime_creneaux_cibles")
+    if not isinstance(saved_regime_creneaux, list):
+        legacy = saved_ui.get("regime_jours_cibles")
+        if isinstance(legacy, list):
+            saved_regime_creneaux = migrate_regime_creneaux_cibles(
+                legacy, premier_jour=saved_premier_jour
+            )
+        else:
+            saved_regime_creneaux = _default_regime_selection(saved_premier_jour)
 
     ui.label("Menu & Drive").classes("text-h5 text-weight-medium text-grey-9 q-mb-xs")
     ui.label(
@@ -150,6 +154,8 @@ def create_drive_view():
                         {"manual": "Saisie manuelle", "consignes": "Consignes IA"},
                         value=saved_enfants_mode,
                     ).props("inline dense").classes("q-mb-sm")
+                    ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
+                    meal_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
                     enfants_consignes_container = ui.column().classes("w-full")
                     with enfants_consignes_container:
                         ui.label("Consignes pour l'IA").classes("text-caption text-grey-7")
@@ -157,8 +163,6 @@ def create_drive_view():
                             value=saved_ui.get("enfants_consignes", ""),
                             placeholder="repas pour enfant\npas de lait\ndessert fait maison",
                         ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
-                        ui.label("Créneaux à générer").classes("text-caption text-grey-7 q-mb-xs")
-                        meal_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
                     ui.label("Template repas").classes("text-caption text-grey-7")
                     meals_input = ui.textarea(
                         value=saved_ui.get("meals_text")
@@ -171,10 +175,10 @@ def create_drive_view():
 
             with ui.column().classes("col-4"):
                 with ui.card().classes(f"w-full {CARD_GOOGLE}"):
-                    ui.label("👥 Régime").classes("text-subtitle1 q-mb-sm")
+                    ui.label("👥 Régime spécial (hôte additionnel)").classes("text-subtitle1 q-mb-sm")
                     convives_regime_input = ui.number(
-                        "Nombre de convives (régime)",
-                        value=int(saved_ui.get("convives_regime", 4)),
+                        "Nombre de convives (hôte régime)",
+                        value=int(saved_ui.get("convives_regime", 1)),
                         min=1,
                         max=20,
                     ).props("outlined dense").classes("w-full q-mb-sm")
@@ -182,15 +186,15 @@ def create_drive_view():
                         {"manual": "Saisie manuelle", "consignes": "Consignes IA"},
                         value=saved_regime_mode,
                     ).props("inline dense").classes("q-mb-sm")
+                    ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
+                    regime_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
                     regime_consignes_container = ui.column().classes("w-full")
                     with regime_consignes_container:
                         ui.label("Consignes régime pour l'IA").classes("text-caption text-grey-7")
                         regime_consignes_input = ui.textarea(
                             value=saved_ui.get("regime_consignes", ""),
-                            placeholder="sans lactose\nprotéines poisson le mardi",
+                            placeholder="anti-constipation\nsans lactose\nprotéines poisson le mardi",
                         ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
-                        ui.label("Jours à couvrir").classes("text-caption text-grey-7 q-mb-xs")
-                        regime_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
                     ui.label("Template régime").classes("text-caption text-grey-7")
                     regime_input = ui.textarea(
                         value=saved_ui.get("regime_text")
@@ -285,29 +289,26 @@ def create_drive_view():
 
     def _rebuild_regime_checkboxes() -> None:
         pj = _premier_jour()
-        selected = {day for day, cb in state["regime_checkboxes"].items() if cb.value}
+        selected = {
+            slot for slot, cb in state["regime_checkboxes"].items() if cb.value
+        }
         if not state["regime_checkboxes"]:
-            selected = set(saved_regime_jours)
+            selected = set(saved_regime_creneaux)
         regime_checkboxes_row.clear()
         state["regime_checkboxes"] = {}
         with regime_checkboxes_row:
-            for day in ordered_regime_days(pj):
-                cb = ui.checkbox(day[:3], value=day in selected).props("dense")
-                cb.tooltip(day)
-                state["regime_checkboxes"][day] = cb
+            for slot in ordered_meal_slots(pj):
+                short = slot.replace(" midi", " M").replace(" soir", " S")
+                cb = ui.checkbox(short, value=slot in selected).props("dense")
+                cb.tooltip(slot)
+                state["regime_checkboxes"][slot] = cb
                 cb.on("update:model-value", lambda _: _schedule_save())
 
     def _collect_meal_creneaux_cibles() -> list[str]:
-        if str(enfants_mode_radio.value) != "consignes":
-            return []
-        return [
-            slot for slot, cb in state["meal_checkboxes"].items() if cb.value
-        ]
+        return [slot for slot, cb in state["meal_checkboxes"].items() if cb.value]
 
-    def _collect_regime_jours_cibles() -> list[str]:
-        if str(regime_mode_radio.value) != "consignes":
-            return []
-        return [day for day, cb in state["regime_checkboxes"].items() if cb.value]
+    def _collect_regime_creneaux_cibles() -> list[str]:
+        return [slot for slot, cb in state["regime_checkboxes"].items() if cb.value]
 
     def _update_enfants_mode_visibility() -> None:
         is_consignes = str(enfants_mode_radio.value) == "consignes"
@@ -332,7 +333,7 @@ def create_drive_view():
 
     def _collect_regime_values() -> dict[str, str]:
         return parse_prefixed_textarea_by_prefix(
-            regime_input.value, tuple(REGIME_PREFIXES.keys()), REGIME_PREFIXES
+            regime_input.value, tuple(MEAL_PREFIXES.keys()), MEAL_PREFIXES
         )
 
     def _reorder_saisie_textareas() -> None:
@@ -341,7 +342,7 @@ def create_drive_view():
             _collect_meal_values(), ordered_meal_slots(pj)
         )
         regime_input.value = format_prefixed_textarea(
-            _collect_regime_values(), ordered_regime_days(pj)
+            _collect_regime_values(), ordered_meal_slots(pj)
         )
         _rebuild_meal_checkboxes()
         _rebuild_regime_checkboxes()
@@ -365,7 +366,7 @@ def create_drive_view():
             "enfants_consignes": enfants_consignes_input.value or "",
             "regime_consignes": regime_consignes_input.value or "",
             "enfants_creneaux_cibles": _collect_meal_creneaux_cibles(),
-            "regime_jours_cibles": _collect_regime_jours_cibles(),
+            "regime_creneaux_cibles": _collect_regime_creneaux_cibles(),
             "meals_text": meals_input.value or "",
             "regime_text": regime_input.value or "",
             "extras_text": extras_input.value or "",
@@ -915,11 +916,12 @@ def create_drive_view():
             enfants_consignes=enfants_consignes_input.value or "",
             enfants_creneaux_cibles=_collect_meal_creneaux_cibles(),
             regime_consignes=regime_consignes_input.value or "",
-            regime_jours_cibles=_collect_regime_jours_cibles(),
+            regime_creneaux_cibles=_collect_regime_creneaux_cibles(),
         )
         if not drive_menu_input_has_generatable_content(payload):
             ui.notify(
-                "Saisissez au moins un plat, des consignes avec créneaux cochés, ou un extra.",
+                "Saisissez au moins un plat enfant, des consignes avec créneaux cochés, "
+                "un plat/consigne hôte régime, ou un extra.",
                 type="warning",
             )
             return
@@ -949,14 +951,11 @@ def create_drive_view():
                     premier_jour=pj,
                     existing_values=_collect_meal_values(),
                 )
-                if str(regime_mode_radio.value) == "consignes" and (
-                    regime_consignes_input.value or ""
-                ).strip():
-                    regime_input.value = mirror_regime_consignes_to_text(
+                if result.planning_regime:
+                    regime_input.value = mirror_planning_to_regime_text(
+                        result,
                         premier_jour=pj,
                         existing_values=_collect_regime_values(),
-                        regime_consignes=regime_consignes_input.value or "",
-                        regime_jours_cibles=_collect_regime_jours_cibles(),
                     )
                 show_results(result)
                 ui.notify("Planning et liste de courses générés.", type="positive")
@@ -1076,13 +1075,13 @@ def create_drive_view():
 
     async def reset_regime_col() -> None:
         pj = _premier_jour()
-        regime_mode_radio.value = "manual"
+        regime_mode_radio.value = "consignes"
         regime_consignes_input.value = ""
         regime_input.value = default_regime_textarea_value(pj)
         _update_regime_mode_visibility()
         _rebuild_regime_checkboxes()
         await _save_current_ui_state()
-        ui.notify("Colonne « Régime » effacée.", type="info")
+        ui.notify("Colonne « Régime spécial » effacée.", type="info")
 
     async def reset_col3() -> None:
         extras_input.value = ""
@@ -1100,7 +1099,7 @@ def create_drive_view():
         convives_enfants_input.value = 4
         convives_regime_input.value = 4
         enfants_mode_radio.value = "manual"
-        regime_mode_radio.value = "manual"
+        regime_mode_radio.value = "consignes"
         enfants_consignes_input.value = ""
         regime_consignes_input.value = ""
         meals_input.value = default_meal_textarea_value()

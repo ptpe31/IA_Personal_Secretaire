@@ -11,9 +11,13 @@ from app.models.drive import (
     DriveMenuAnalysisResult,
     PlanningRepasItem,
     build_drive_menu_input,
+    drive_menu_input_has_generatable_content,
+    migrate_regime_creneaux_cibles,
+    mirror_planning_to_regime_text,
     ordered_meal_slots,
     ordered_week_days,
     parse_meal_slot,
+    resolve_allowed_regime_slots,
     sort_planning_repas,
 )
 from app.utils.dates import compute_menu_week_sunday
@@ -53,13 +57,15 @@ def test_parse_meal_slot_invalid():
 def test_build_drive_menu_input_strips_empty_prefix():
     payload = build_drive_menu_input(
         {"Dimanche midi": "Dimanche midi : "},
-        {"Lundi": "Lundi : "},
+        {"Lundi midi": "Lundi midi : "},
         "",
         4,
         2,
+        enfants_creneaux_cibles=["Dimanche midi"],
+        regime_creneaux_cibles=["Lundi midi"],
     )
     assert payload.plats == {}
-    assert payload.regime == {}
+    assert payload.regime_plats == {}
     assert payload.nb_convives_enfants == 4
     assert payload.nb_convives_regime == 2
 
@@ -67,13 +73,15 @@ def test_build_drive_menu_input_strips_empty_prefix():
 def test_build_drive_menu_input_keeps_filled_lines():
     payload = build_drive_menu_input(
         {"Dimanche midi": "Dimanche midi : pâtes"},
-        {"Lundi": "Lundi : sans lactose"},
+        {"Lundi midi": "Lundi midi : sans lactose"},
         "essuie-tout",
         4,
         4,
+        enfants_creneaux_cibles=["Dimanche midi"],
+        regime_creneaux_cibles=["Lundi midi"],
     )
     assert payload.plats["Dimanche midi"] == "pâtes"
-    assert payload.regime["Lundi"] == "sans lactose"
+    assert payload.regime_plats["Lundi midi"] == "sans lactose"
     assert payload.extras == "essuie-tout"
 
 
@@ -84,6 +92,7 @@ def test_build_drive_menu_input_strips_trailing_spaces():
         "  ",
         0,
         3,
+        enfants_creneaux_cibles=["Lundi midi"],
     )
     assert payload.plats["Lundi midi"] == "quiche"
     assert payload.nb_convives_enfants == 1
@@ -150,6 +159,7 @@ def test_build_drive_menu_input_premier_jour():
         4,
         4,
         premier_jour_semaine="Mercredi",
+        enfants_creneaux_cibles=["Mercredi midi"],
     )
     assert payload.premier_jour_semaine == "Mercredi"
     assert payload.plats["Mercredi midi"] == "tarte"
@@ -165,12 +175,21 @@ def test_build_drive_menu_input_consignes():
         enfants_consignes="pas de lait",
         enfants_creneaux_cibles=["Lundi midi", "Invalid slot"],
         regime_consignes="sans gluten",
-        regime_jours_cibles=["Lundi", "Dimanche"],
+        regime_creneaux_cibles=["Lundi", "Dimanche midi"],
     )
     assert payload.enfants_consignes == "pas de lait"
     assert payload.enfants_creneaux_cibles == ["Lundi midi"]
     assert payload.regime_consignes == "sans gluten"
-    assert "Lundi" in payload.regime_jours_cibles
+    assert "Lundi midi" in payload.regime_creneaux_cibles
+    assert "Lundi soir" in payload.regime_creneaux_cibles
+    assert "Dimanche midi" in payload.regime_creneaux_cibles
+
+
+def test_migrate_regime_creneaux_cibles_from_days():
+    migrated = migrate_regime_creneaux_cibles(["Lundi", "Mardi"])
+    assert "Lundi midi" in migrated
+    assert "Lundi soir" in migrated
+    assert "Mardi midi" in migrated
 
 
 def test_resolve_allowed_meal_slots_manual_and_consignes():
@@ -185,8 +204,20 @@ def test_resolve_allowed_meal_slots_manual_and_consignes():
     assert allowed == {("Lundi", "Midi"), ("Mardi", "Soir")}
 
 
+def test_resolve_allowed_regime_slots_manual_and_consignes():
+    from app.models.drive import DriveMenuInput
+
+    payload = DriveMenuInput(
+        regime_plats={"Lundi midi": "salade"},
+        regime_consignes="anti-constipation",
+        regime_creneaux_cibles=["Lundi midi", "Mardi soir"],
+    )
+    allowed = resolve_allowed_regime_slots(payload)
+    assert allowed == {("Lundi", "Midi"), ("Mardi", "Soir")}
+
+
 def test_drive_menu_input_has_generatable_content():
-    from app.models.drive import DriveMenuInput, drive_menu_input_has_generatable_content
+    from app.models.drive import DriveMenuInput
 
     assert not drive_menu_input_has_generatable_content(DriveMenuInput())
     assert drive_menu_input_has_generatable_content(DriveMenuInput(extras="essuie-tout"))
@@ -196,6 +227,42 @@ def test_drive_menu_input_has_generatable_content():
             enfants_creneaux_cibles=["Lundi midi"],
         )
     )
+    assert drive_menu_input_has_generatable_content(
+        DriveMenuInput(
+            regime_consignes="sans gluten",
+            regime_creneaux_cibles=["Lundi midi"],
+        )
+    )
+
+
+def test_mirror_planning_to_regime_text():
+    result = DriveMenuAnalysisResult(
+        planning_repas=[],
+        planning_regime=[
+            PlanningRepasItem(
+                jour="Mardi",
+                moment="Soir",
+                plat="Salade verte, haricots verts",
+                batch_cooking_dimanche="Cuire haricots",
+                action_minute="Assembler",
+            )
+        ],
+        liste_courses=[
+            CourseItem(
+                mot_cle="haricots",
+                libelle="Haricots verts",
+                rayon="Fruits & Légumes",
+                quantite_recette=400,
+                unite_recette="g",
+            )
+        ],
+    )
+    text = mirror_planning_to_regime_text(
+        result,
+        premier_jour="Lundi",
+        existing_values={slot: MEAL_PREFIXES[slot] for slot in MEAL_SLOTS},
+    )
+    assert "Mardi soir : Salade verte, haricots verts" in text
 
 
 def test_drive_menu_analysis_result_min_items():

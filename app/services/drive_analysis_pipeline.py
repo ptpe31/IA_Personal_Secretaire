@@ -334,6 +334,7 @@ def finalize_drive_analysis(
     data: dict,
     *,
     allowed_slots: set[tuple[str, str]] | None = None,
+    allowed_regime_slots: set[tuple[str, str]] | None = None,
     input_plats: dict[str, str] | None = None,
     premier_jour_semaine: str = PREMIER_JOUR_DEFAUT,
 ) -> DriveMenuAnalysisResult:
@@ -354,13 +355,39 @@ def finalize_drive_analysis(
     if allowed_slots is None and input_plats:
         allowed_slots = _allowed_planning_slots(input_plats) or None
     planning_items = filter_planning_to_allowed_slots(planning_items, allowed_slots)
-    if not planning_items:
+    if allowed_slots and not planning_items:
         raise ValueError(
-            "planning_repas vide ou invalide — aucun créneau ne correspond à la saisie utilisateur."
+            "planning_repas vide ou invalide — aucun créneau enfant ne correspond à la saisie utilisateur."
         )
     cleaned["planning_repas"] = sort_planning_repas(
         planning_items, premier_jour=premier_jour_semaine
     )
+
+    raw_regime = cleaned.get("planning_regime", [])
+    if not isinstance(raw_regime, list):
+        raw_regime = []
+    regime_items: list[PlanningRepasItem] = []
+    for item in raw_regime:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_planning_raw(item)
+        if normalized is None:
+            continue
+        regime_items.append(PlanningRepasItem.model_validate(normalized))
+
+    regime_items = filter_planning_to_allowed_slots(regime_items, allowed_regime_slots)
+    if allowed_regime_slots and not regime_items:
+        raise ValueError(
+            "planning_regime vide ou invalide — aucun créneau hôte régime ne correspond à la saisie utilisateur."
+        )
+    cleaned["planning_regime"] = sort_planning_repas(
+        regime_items, premier_jour=premier_jour_semaine
+    )
+
+    if not cleaned["planning_repas"] and not cleaned["planning_regime"]:
+        raise ValueError(
+            "planning_repas et planning_regime vides — aucun créneau ne correspond à la saisie utilisateur."
+        )
 
     raw_list = cleaned.get("liste_courses", [])
     if not isinstance(raw_list, list):
@@ -375,8 +402,9 @@ def finalize_drive_analysis(
 
     result = DriveMenuAnalysisResult.model_validate(cleaned)
     logger.info(
-        "[DRIVE-IA] Planning validé — %s repas, %s article(s) courses",
+        "[DRIVE-IA] Planning validé — %s repas enfants, %s repas hôte régime, %s article(s) courses",
         len(result.planning_repas),
+        len(result.planning_regime),
         len(result.liste_courses),
     )
     return result
