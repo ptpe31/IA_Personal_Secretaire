@@ -143,7 +143,7 @@ def create_drive_view():
         ).classes("w-full mb-4")
 
         with ui.row().classes("w-full q-col-gutter-md items-start"):
-            with ui.column().classes("col-4"):
+            with ui.column().classes("col-12 col-md-6"):
                 with ui.card().classes(f"w-full {CARD_GOOGLE}"):
                     ui.label("🍽️ Plats de la semaine (Enfants)").classes("text-subtitle1 q-mb-sm")
                     convives_enfants_input = ui.number(
@@ -179,58 +179,60 @@ def create_drive_view():
                         icon="cleaning_services",
                     ).props("flat color=grey dense")
 
-            with ui.column().classes("col-4"):
-                with ui.card().classes(f"w-full {CARD_GOOGLE}"):
-                    ui.label("👥 Régime spécial (hôte additionnel)").classes("text-subtitle1 q-mb-sm")
-                    convives_regime_input = ui.number(
-                        "Nombre de convives (hôte régime)",
-                        value=int(saved_ui.get("convives_regime", 1)),
-                        min=1,
-                        max=20,
-                    ).props("outlined dense").classes("w-full q-mb-sm")
-                    regime_mode_radio = ui.radio(
-                        {"manual": "Saisie manuelle", "consignes": "Consignes IA"},
-                        value=saved_regime_mode,
-                    ).props("inline dense").classes("q-mb-sm")
-                    ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
-                    regime_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
-                    regime_consignes_container = ui.column().classes("w-full")
-                    with regime_consignes_container:
-                        ui.label("Consignes régime pour l'IA").classes("text-caption text-grey-7")
-                        regime_consignes_input = ui.textarea(
-                            value=saved_ui.get("regime_consignes", ""),
-                            placeholder="anti-constipation\nsans lactose\nprotéines poisson le mardi",
-                        ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
-                        reset_regime_consignes_btn = ui.button(
-                            "🧹 Effacer consigne pour l'IA",
-                            icon="cleaning_services",
-                        ).props("flat color=grey dense").classes("q-mb-sm")
-                    ui.label("Template régime").classes("text-caption text-grey-7")
-                    regime_input = ui.textarea(
-                        value=saved_ui.get("regime_text")
-                        or default_regime_textarea_value(saved_premier_jour)
-                    ).props("outlined autogrow rows=10").classes("w-full q-mb-sm")
-                    reset_regime_btn = ui.button(
-                        "🧹 Effacer cette colonne",
-                        icon="cleaning_services",
-                    ).props("flat color=grey dense")
+            with ui.column().classes("col-12 col-md-6"):
+                with ui.row().classes("w-full q-col-gutter-md items-start"):
+                    with ui.column().classes("col-12 col-md-7"):
+                        with ui.card().classes(f"w-full {CARD_GOOGLE}"):
+                            ui.label("👥 Régime spécial (hôte additionnel)").classes("text-subtitle1 q-mb-sm")
+                            convives_regime_input = ui.number(
+                                "Nombre de convives (hôte régime)",
+                                value=int(saved_ui.get("convives_regime", 1)),
+                                min=1,
+                                max=20,
+                            ).props("outlined dense").classes("w-full q-mb-sm")
+                            regime_mode_radio = ui.radio(
+                                {"manual": "Saisie manuelle", "consignes": "Consignes IA"},
+                                value=saved_regime_mode,
+                            ).props("inline dense").classes("q-mb-sm")
+                            ui.label("Créneaux à couvrir").classes("text-caption text-grey-7 q-mb-xs")
+                            regime_checkboxes_row = ui.row().classes("wrap q-gutter-xs q-mb-sm")
+                            regime_consignes_container = ui.column().classes("w-full")
+                            with regime_consignes_container:
+                                ui.label("Consignes régime pour l'IA").classes("text-caption text-grey-7")
+                                regime_consignes_input = ui.textarea(
+                                    value=saved_ui.get("regime_consignes", ""),
+                                    placeholder="anti-constipation\nsans lactose\nprotéines poisson le mardi",
+                                ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
+                                reset_regime_consignes_btn = ui.button(
+                                    "🧹 Effacer consigne pour l'IA",
+                                    icon="cleaning_services",
+                                ).props("flat color=grey dense").classes("q-mb-sm")
+                            ui.label("Template régime").classes("text-caption text-grey-7")
+                            regime_input = ui.textarea(
+                                value=saved_ui.get("regime_text")
+                                or default_regime_textarea_value(saved_premier_jour)
+                            ).props("outlined autogrow rows=10").classes("w-full q-mb-sm")
+                            reset_regime_btn = ui.button(
+                                "🧹 Effacer cette colonne",
+                                icon="cleaning_services",
+                            ).props("flat color=grey dense")
 
-            with ui.column().classes("col-4"):
-                with ui.card().classes(f"w-full {CARD_GOOGLE}"):
-                    ui.label("📦 Choses à ajouter").classes("text-subtitle1 q-mb-sm")
-                    extras_input = ui.textarea(
-                        value=saved_ui.get("extras_text", ""),
-                        placeholder="rouleau essuie-tout, couches, œufs…",
-                    ).props("outlined autogrow rows=8").classes("w-full q-mb-sm")
-                    ui.label("Commentaires").classes("text-caption text-grey-7")
-                    commentaires_input = ui.textarea(
-                        value=saved_ui.get("commentaires_text", ""),
-                        placeholder="Notes libres pour la semaine…",
-                    ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
-                    reset_col3_btn = ui.button(
-                        "🧹 Effacer cette colonne",
-                        icon="cleaning_services",
-                    ).props("flat color=grey dense")
+                    with ui.column().classes("col-12 col-md-5"):
+                        with ui.card().classes(f"w-full {CARD_GOOGLE}"):
+                            ui.label("📦 Choses à ajouter").classes("text-subtitle1 q-mb-sm")
+                            extras_input = ui.textarea(
+                                value=saved_ui.get("extras_text", ""),
+                                placeholder="rouleau essuie-tout, couches, œufs…",
+                            ).props("outlined autogrow rows=8").classes("w-full q-mb-sm")
+                            ui.label("Commentaires").classes("text-caption text-grey-7")
+                            commentaires_input = ui.textarea(
+                                value=saved_ui.get("commentaires_text", ""),
+                                placeholder="Notes libres pour la semaine…",
+                            ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
+                            reset_col3_btn = ui.button(
+                                "🧹 Effacer cette colonne",
+                                icon="cleaning_services",
+                            ).props("flat color=grey dense")
 
         with ui.row().classes("q-gutter-sm q-my-md items-center"):
             generate_btn = ui.button(
