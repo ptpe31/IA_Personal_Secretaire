@@ -384,6 +384,11 @@ def create_drive_view():
         await asyncio.to_thread(save_drive_ui_state, _build_save_payload())
 
     def _schedule_save() -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
         task = state.get("save_debounce_task")
         if task is not None and not task.done():
             task.cancel()
@@ -395,7 +400,7 @@ def create_drive_view():
             except asyncio.CancelledError:
                 pass
 
-        state["save_debounce_task"] = asyncio.create_task(_debounced())
+        state["save_debounce_task"] = loop.create_task(_debounced())
 
     def _wire_autosave(element, *, event: str = "update:model-value") -> None:
         element.on(event, lambda _: _schedule_save())
