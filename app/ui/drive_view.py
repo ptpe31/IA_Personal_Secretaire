@@ -163,6 +163,10 @@ def create_drive_view():
                             value=saved_ui.get("enfants_consignes", ""),
                             placeholder="repas pour enfant\npas de lait\ndessert fait maison",
                         ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
+                        reset_enfants_consignes_btn = ui.button(
+                            "🧹 Effacer consigne pour l'IA",
+                            icon="cleaning_services",
+                        ).props("flat color=grey dense").classes("q-mb-sm")
                     ui.label("Template repas").classes("text-caption text-grey-7")
                     meals_input = ui.textarea(
                         value=saved_ui.get("meals_text")
@@ -195,6 +199,10 @@ def create_drive_view():
                             value=saved_ui.get("regime_consignes", ""),
                             placeholder="anti-constipation\nsans lactose\nprotéines poisson le mardi",
                         ).props("outlined autogrow rows=4").classes("w-full q-mb-sm")
+                        reset_regime_consignes_btn = ui.button(
+                            "🧹 Effacer consigne pour l'IA",
+                            icon="cleaning_services",
+                        ).props("flat color=grey dense").classes("q-mb-sm")
                     ui.label("Template régime").classes("text-caption text-grey-7")
                     regime_input = ui.textarea(
                         value=saved_ui.get("regime_text")
@@ -1070,23 +1078,25 @@ def create_drive_view():
 
     async def reset_enfants_col() -> None:
         pj = _premier_jour()
-        enfants_mode_radio.value = "manual"
-        enfants_consignes_input.value = ""
         meals_input.value = default_meal_textarea_value(pj)
-        _update_enfants_mode_visibility()
-        _rebuild_meal_checkboxes()
         await _save_current_ui_state()
-        ui.notify("Colonne « Plats enfants » effacée.", type="info")
+        ui.notify("Template repas effacé.", type="info")
+
+    async def reset_enfants_consignes() -> None:
+        enfants_consignes_input.value = ""
+        await _save_current_ui_state()
+        ui.notify("Consignes IA enfants effacées.", type="info")
 
     async def reset_regime_col() -> None:
         pj = _premier_jour()
-        regime_mode_radio.value = "consignes"
-        regime_consignes_input.value = ""
         regime_input.value = default_regime_textarea_value(pj)
-        _update_regime_mode_visibility()
-        _rebuild_regime_checkboxes()
         await _save_current_ui_state()
-        ui.notify("Colonne « Régime spécial » effacée.", type="info")
+        ui.notify("Template régime effacé.", type="info")
+
+    async def reset_regime_consignes() -> None:
+        regime_consignes_input.value = ""
+        await _save_current_ui_state()
+        ui.notify("Consignes IA régime effacées.", type="info")
 
     async def reset_col3() -> None:
         extras_input.value = ""
@@ -1132,7 +1142,9 @@ def create_drive_view():
     generate_btn.on("click", generate)
     reset_btn.on("click", reset_current_week)
     reset_enfants_btn.on("click", reset_enfants_col)
+    reset_enfants_consignes_btn.on("click", reset_enfants_consignes)
     reset_regime_btn.on("click", reset_regime_col)
+    reset_regime_consignes_btn.on("click", reset_regime_consignes)
     reset_col3_btn.on("click", reset_col3)
     enfants_mode_radio.on("update:model-value", lambda _: (_update_enfants_mode_visibility(), _schedule_save()))
     regime_mode_radio.on("update:model-value", lambda _: (_update_regime_mode_visibility(), _schedule_save()))
