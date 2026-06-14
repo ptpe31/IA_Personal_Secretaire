@@ -951,23 +951,25 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 
 **Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Seule la checkbox « actif » remonte immédiatement vers Python. Avant toute sauvegarde UI (`row_states`), un **flush** client → serveur synchronise toutes les lignes.
 
-#### 8.3.2 Validation modale avant robot
+#### 8.3.2 Validation modale et bouton unique
 
-Avant d'ouvrir le navigateur (**LANCER LE ROBOT …**) ou de démarrer les courses (**▶️ DÉMARRER LES COURSES**), une modale affiche :
+Un seul bouton **▶️ DÉMARRER LES COURSES** gère tout le flux robot (ouverture navigateur + ajouts panier). Avant chaque action, une modale affiche :
 
 - Titre : « Valider la liste de courses ? »
 - Résumé : *N* article(s) commandable(s) · *P* paquet(s)
 - Tableau récap : Article | Besoin | Cont. | Unité | Commande (articles retenus uniquement)
 - Si des lignes actives ne sont pas commandables (URL / contenance / unité manquantes, incompatibilité) : *« X article(s) seront ignorés. »* (sans détail par article)
 - **Non, continuer l'édition** → fermeture, liste éditable
-- **Oui** → flush, calcul `determiner_nb_clics`, persistance `drive_mapping.json`, puis action robot
+- **Oui, démarrer les courses** → flush, calcul `determiner_nb_clics`, persistance `drive_mapping.json`, puis action robot
 
-| Bouton | Après « Oui » |
-|--------|----------------|
-| LANCER LE ROBOT … | Ouverture Playwright + pause connexion magasin |
-| ▶️ DÉMARRER LES COURSES | `signal_resume` avec la liste validée — début des ajouts panier |
+| État | Après « Oui » |
+|------|----------------|
+| Aucun robot actif | Ouverture Playwright + pause connexion magasin (1er clic) |
+| Navigateur ouvert, en attente connexion | `signal_resume` — début des ajouts panier (2e clic) |
 
-« Oui » est désactivé implicitement s'il n'y a **aucun** article commandable. Mode **souple** : les articles incomplets sont ignorés sans bloquer le lancement.
+Pendant les ajouts panier, le bouton est **désactivé**. Bannière orange : se connecter au drive, puis **recliquer** sur le même bouton.
+
+« Oui » est implicitement indisponible s'il n'y a **aucun** article commandable. Mode **souple** : les articles incomplets sont ignorés sans bloquer le lancement.
 
 Mapping `drive_mapping.json` : écriture **au commit** (validation Oui), plus à chaque frappe.
 
@@ -987,9 +989,9 @@ Mapping `drive_mapping.json` : écriture **au commit** (validation Oui), plus à
 
 | Phase | Comportement |
 |-------|--------------|
-| Validation | Modale § 8.3.2 — liste flushée, commandes calculées, mapping persisté |
-| Connexion | `launch_persistent_context` sur `~/.leclerc_profile` ; ouverture magasin Roques-sur-Garonne ; pause `[▶️ Démarrer les courses]` |
-| Courses | **Uniquement bypass URL** : pour chaque article coché avec URL, `page.goto(url#plus)` × `quantite` — ajout auto panier Leclerc ; **aucune recherche** pour produits mémorisés |
+| Validation | Modale § 8.3.2 — liste flushée, commandes calculées, mapping persisté (à chaque clic sur **▶️ Démarrer les courses**) |
+| Connexion | 1er clic validé → `launch_persistent_context` sur `~/.leclerc_profile` ; magasin Roques-sur-Garonne ; pause connexion |
+| Courses | 2e clic validé → `signal_resume` ; bypass URL : `page.goto(url#plus)` × `nb_paquets` par article mémorisé |
 | Sans URL | Produit reporté dans `produits_a_valider` sans bloquer la boucle |
 | Apprentissage | Bip macOS ; recherche lente (`delay=180`) ; utilisateur ouvre la fiche produit ; capture `page.url` → `drive_mapping.json` ; mise à jour tableau UI en temps réel ; bouton [Passer] |
 | Stop | `🛑 STOPPER LE ROBOT` annule `_robot_task` ; fermeture propre navigateur (`context.close()`) |

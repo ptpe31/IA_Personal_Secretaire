@@ -124,6 +124,7 @@ def create_drive_view():
         "platform_select": None,
         "driver": None,
         "robot_task": None,
+        "awaiting_login": False,
         "learning_active": False,
         "platform": saved_platform,
         "menu_meta": dict(saved_ui.get("menu_meta") or {}),
@@ -297,12 +298,9 @@ def create_drive_view():
         robot_row = ui.row().classes("q-gutter-sm q-mb-md items-center")
         robot_row.set_visibility(False)
         with robot_row:
-            resume_btn = ui.button("▶️ DÉMARRER LES COURSES", icon="play_arrow").props(
-                "outline color=primary"
-            )
-            launch_btn = ui.button(
-                DRIVE_PLATFORMS[DEFAULT_DRIVE_PLATFORM]["robot_label"],
-                icon="smart_toy",
+            start_courses_btn = ui.button(
+                "▶️ DÉMARRER LES COURSES",
+                icon="play_arrow",
             ).props("color=primary unelevated").classes("shadow-2")
             stop_btn = ui.button("🛑 STOPPER LE ROBOT", icon="stop").props(
                 "flat color=negative"
@@ -904,11 +902,8 @@ def create_drive_view():
                         actif=True,
                     )
 
-    def _set_launch_enabled(enabled: bool) -> None:
-        launch_btn.enable() if enabled else launch_btn.disable()
-
-    def _set_resume_enabled(enabled: bool) -> None:
-        resume_btn.enable() if enabled else resume_btn.disable()
+    def _set_start_enabled(enabled: bool) -> None:
+        start_courses_btn.enable() if enabled else start_courses_btn.disable()
 
     def _set_stop_visible(visible: bool) -> None:
         stop_btn.set_visibility(visible)
@@ -916,11 +911,10 @@ def create_drive_view():
     def _update_robot_labels() -> None:
         platform = _platform()
         cfg = DRIVE_PLATFORMS[platform]
-        launch_btn.text = cfg["robot_label"]
         robot_banner_label.text = (
-            f"Connectez-vous dans la fenêtre {cfg['label']} "
+            f"Après validation, connectez-vous dans la fenêtre {cfg['label']} "
             "(magasin Roques pré-sélectionné pour Leclerc), "
-            "puis cliquez sur [▶️ Démarrer les courses]."
+            "puis recliquez sur [▶️ Démarrer les courses] pour lancer les ajouts au panier."
         )
 
     def _on_status(message: str) -> None:
@@ -1241,8 +1235,8 @@ def create_drive_view():
             return
 
         state["driver"] = driver
-        _set_launch_enabled(False)
-        _set_resume_enabled(True)
+        state["awaiting_login"] = True
+        _set_start_enabled(True)
         _set_stop_visible(True)
 
         async def _run() -> None:
@@ -1258,8 +1252,8 @@ def create_drive_view():
                 )
             finally:
                 def _done() -> None:
-                    _set_launch_enabled(True)
-                    _set_resume_enabled(True)
+                    state["awaiting_login"] = False
+                    _set_start_enabled(True)
                     _set_stop_visible(False)
                     skip_btn.set_visibility(False)
                     state["robot_task"] = None
@@ -1268,23 +1262,41 @@ def create_drive_view():
                 run_if_client_alive(anchor, _done)
 
         state["robot_task"] = asyncio.create_task(_run())
-        ui.notify(f"{cfg['label']} lancé — fenêtre navigateur ouverte.", type="info")
+        ui.notify(f"{cfg['label']} — fenêtre navigateur ouverte.", type="info")
 
-    async def launch_robot() -> None:
-        if state.get("robot_task") and not state["robot_task"].done():
-            ui.notify("Le robot est déjà en cours d'exécution.", type="warning")
-            return
+    async def start_courses() -> None:
         platform = _platform()
         cfg = DRIVE_PLATFORMS[platform]
         if not cfg.get("available"):
             ui.notify(f"{cfg['label']} — bientôt disponible.", type="warning")
             return
-        report = await _request_validation(
-            confirm_label=f"Oui, {cfg['label']}",
-        )
+
+        driver = state.get("driver")
+        robot_task = state.get("robot_task")
+        robot_running = robot_task is not None and not robot_task.done()
+
+        if robot_running and driver is None:
+            ui.notify("Le robot démarre…", type="info")
+            return
+        if robot_running and driver is not None and not state.get("awaiting_login", False):
+            ui.notify("Les courses sont en cours.", type="warning")
+            return
+
+        report = await _request_validation(confirm_label="Oui, démarrer les courses")
         if report is None:
             return
-        await _start_robot(report.items)
+
+        if driver is None:
+            await _start_robot(report.items)
+            return
+
+        await driver.signal_resume(report.items)
+        state["awaiting_login"] = False
+        _set_start_enabled(False)
+        ui.notify(
+            f"Courses démarrées — {len(report.items)} article(s) synchronisé(s) depuis le tableau.",
+            type="positive",
+        )
 
     async def cancel_robot() -> None:
         task = state.get("robot_task")
@@ -1295,27 +1307,8 @@ def create_drive_view():
             await task
         except asyncio.CancelledError:
             pass
+        state["awaiting_login"] = False
         ui.notify("Robot stoppé.", type="negative")
-
-    async def resume_robot() -> None:
-        driver = state.get("driver")
-        if driver is None:
-            ui.notify(
-                f"Lancez d'abord le robot avec [{DRIVE_PLATFORMS[_platform()]['robot_label']}].",
-                type="warning",
-            )
-            return
-        report = await _request_validation(
-            confirm_label="Oui, démarrer les courses",
-        )
-        if report is None:
-            return
-        await driver.signal_resume(report.items)
-        _set_resume_enabled(False)
-        ui.notify(
-            f"Courses démarrées — {len(report.items)} article(s) synchronisé(s) depuis le tableau.",
-            type="positive",
-        )
 
     async def skip_product() -> None:
         driver = state.get("driver")
@@ -1416,8 +1409,7 @@ def create_drive_view():
     _wire_autosave(commentaires_input)
     _wire_autosave(convives_enfants_input)
     _wire_autosave(convives_regime_input)
-    launch_btn.on("click", launch_robot)
-    resume_btn.on("click", resume_robot)
+    start_courses_btn.on("click", start_courses)
     stop_btn.on("click", cancel_robot)
     skip_btn.on("click", skip_product)
 
