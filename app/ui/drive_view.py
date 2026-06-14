@@ -99,6 +99,8 @@ def create_drive_view():
         "save_debounce_task": None,
         "meal_checkboxes": {},
         "regime_checkboxes": {},
+        "meal_slot_values": {},
+        "regime_slot_values": {},
     }
 
     def _default_creneaux_selection(premier_jour: str) -> list[str]:
@@ -293,7 +295,7 @@ def create_drive_view():
                 short = slot.replace(" midi", " M").replace(" soir", " S")
                 cb = ui.checkbox(short, value=slot in selected).props("dense")
                 state["meal_checkboxes"][slot] = cb
-                cb.on("update:model-value", lambda _: _schedule_save())
+                cb.on("update:model-value", lambda _: _on_meal_creneaux_change())
 
     def _rebuild_regime_checkboxes() -> None:
         pj = _premier_jour()
@@ -310,13 +312,96 @@ def create_drive_view():
                 cb = ui.checkbox(short, value=slot in selected).props("dense")
                 cb.tooltip(slot)
                 state["regime_checkboxes"][slot] = cb
-                cb.on("update:model-value", lambda _: _schedule_save())
+                cb.on("update:model-value", lambda _: _on_regime_creneaux_change())
 
     def _collect_meal_creneaux_cibles() -> list[str]:
         return [slot for slot, cb in state["meal_checkboxes"].items() if cb.value]
 
     def _collect_regime_creneaux_cibles() -> list[str]:
         return [slot for slot, cb in state["regime_checkboxes"].items() if cb.value]
+
+    def _all_meal_keys() -> tuple[str, ...]:
+        return tuple(MEAL_PREFIXES.keys())
+
+    def _collect_meal_creneaux_cibles_ordered() -> tuple[str, ...]:
+        checked = set(_collect_meal_creneaux_cibles())
+        return tuple(slot for slot in ordered_meal_slots(_premier_jour()) if slot in checked)
+
+    def _collect_regime_creneaux_cibles_ordered() -> tuple[str, ...]:
+        checked = set(_collect_regime_creneaux_cibles())
+        return tuple(slot for slot in ordered_meal_slots(_premier_jour()) if slot in checked)
+
+    def _default_slot_values() -> dict[str, str]:
+        return {key: MEAL_PREFIXES[key] for key in MEAL_PREFIXES}
+
+    def _sync_meals_template_display() -> None:
+        slots = _collect_meal_creneaux_cibles_ordered()
+        cache = state.get("meal_slot_values") or {}
+        meals_input.value = format_prefixed_textarea(cache, slots) if slots else ""
+
+    def _sync_regime_template_display() -> None:
+        slots = _collect_regime_creneaux_cibles_ordered()
+        cache = state.get("regime_slot_values") or {}
+        regime_input.value = format_prefixed_textarea(cache, slots) if slots else ""
+
+    def _merge_textarea_into_meal_cache() -> None:
+        cache = state.setdefault("meal_slot_values", _default_slot_values())
+        prefix_only = {
+            slot: MEAL_PREFIXES[slot].strip().rstrip(":") for slot in MEAL_PREFIXES
+        }
+        for line in (meals_input.value or "").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for slot, prefix in MEAL_PREFIXES.items():
+                if stripped.startswith(prefix) or stripped == prefix_only[slot]:
+                    cache[slot] = line
+                    break
+
+    def _merge_textarea_into_regime_cache() -> None:
+        cache = state.setdefault("regime_slot_values", _default_slot_values())
+        prefix_only = {
+            slot: MEAL_PREFIXES[slot].strip().rstrip(":") for slot in MEAL_PREFIXES
+        }
+        for line in (regime_input.value or "").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for slot, prefix in MEAL_PREFIXES.items():
+                if stripped.startswith(prefix) or stripped == prefix_only[slot]:
+                    cache[slot] = line
+                    break
+
+    def _capture_meals_from_textarea() -> None:
+        _merge_textarea_into_meal_cache()
+
+    def _capture_regime_from_textarea() -> None:
+        _merge_textarea_into_regime_cache()
+
+    def _on_meal_creneaux_change() -> None:
+        _capture_meals_from_textarea()
+        _sync_meals_template_display()
+        _schedule_save()
+
+    def _on_regime_creneaux_change() -> None:
+        _capture_regime_from_textarea()
+        _sync_regime_template_display()
+        _schedule_save()
+
+    def _init_slot_value_caches() -> None:
+        all_keys = _all_meal_keys()
+        meals_saved = saved_ui.get("meals_text") or default_meal_textarea_value(saved_premier_jour)
+        regime_saved = saved_ui.get("regime_text") or default_regime_textarea_value(
+            saved_premier_jour
+        )
+        state["meal_slot_values"] = parse_prefixed_textarea_by_prefix(
+            meals_saved, all_keys, MEAL_PREFIXES
+        )
+        state["regime_slot_values"] = parse_prefixed_textarea_by_prefix(
+            regime_saved, all_keys, MEAL_PREFIXES
+        )
+        _sync_meals_template_display()
+        _sync_regime_template_display()
 
     def _update_enfants_mode_visibility() -> None:
         is_consignes = str(enfants_mode_radio.value) == "consignes"
@@ -328,32 +413,25 @@ def create_drive_view():
 
     _rebuild_meal_checkboxes()
     _rebuild_regime_checkboxes()
+    _init_slot_value_caches()
     _update_enfants_mode_visibility()
     _update_regime_mode_visibility()
 
-    def _all_meal_keys() -> tuple[str, ...]:
-        return tuple(MEAL_PREFIXES.keys())
-
     def _collect_meal_values() -> dict[str, str]:
-        return parse_prefixed_textarea_by_prefix(
-            meals_input.value, _all_meal_keys(), MEAL_PREFIXES
-        )
+        _capture_meals_from_textarea()
+        return dict(state.get("meal_slot_values") or _default_slot_values())
 
     def _collect_regime_values() -> dict[str, str]:
-        return parse_prefixed_textarea_by_prefix(
-            regime_input.value, tuple(MEAL_PREFIXES.keys()), MEAL_PREFIXES
-        )
+        _capture_regime_from_textarea()
+        return dict(state.get("regime_slot_values") or _default_slot_values())
 
     def _reorder_saisie_textareas() -> None:
-        pj = _premier_jour()
-        meals_input.value = format_prefixed_textarea(
-            _collect_meal_values(), ordered_meal_slots(pj)
-        )
-        regime_input.value = format_prefixed_textarea(
-            _collect_regime_values(), ordered_meal_slots(pj)
-        )
+        _capture_meals_from_textarea()
+        _capture_regime_from_textarea()
         _rebuild_meal_checkboxes()
         _rebuild_regime_checkboxes()
+        _sync_meals_template_display()
+        _sync_regime_template_display()
         _schedule_save()
 
     def _build_save_payload() -> dict[str, Any]:
@@ -959,17 +1037,25 @@ def create_drive_view():
 
             def _show() -> None:
                 pj = _premier_jour()
-                meals_input.value = mirror_planning_to_meals_text(
+                mirrored_meals = mirror_planning_to_meals_text(
                     result,
                     premier_jour=pj,
                     existing_values=_collect_meal_values(),
                 )
+                state["meal_slot_values"] = parse_prefixed_textarea_by_prefix(
+                    mirrored_meals, _all_meal_keys(), MEAL_PREFIXES
+                )
+                _sync_meals_template_display()
                 if result.planning_regime:
-                    regime_input.value = mirror_planning_to_regime_text(
+                    mirrored_regime = mirror_planning_to_regime_text(
                         result,
                         premier_jour=pj,
                         existing_values=_collect_regime_values(),
                     )
+                    state["regime_slot_values"] = parse_prefixed_textarea_by_prefix(
+                        mirrored_regime, _all_meal_keys(), MEAL_PREFIXES
+                    )
+                    _sync_regime_template_display()
                 show_results(result)
                 ui.notify("Planning et liste de courses générés.", type="positive")
                 _schedule_save()
@@ -1077,8 +1163,10 @@ def create_drive_view():
             state["learning_active"] = False
 
     async def reset_enfants_col() -> None:
-        pj = _premier_jour()
-        meals_input.value = default_meal_textarea_value(pj)
+        cache = state.setdefault("meal_slot_values", _default_slot_values())
+        for slot in _collect_meal_creneaux_cibles_ordered():
+            cache[slot] = MEAL_PREFIXES[slot]
+        _sync_meals_template_display()
         await _save_current_ui_state()
         ui.notify("Template repas effacé.", type="info")
 
@@ -1088,8 +1176,10 @@ def create_drive_view():
         ui.notify("Consignes IA enfants effacées.", type="info")
 
     async def reset_regime_col() -> None:
-        pj = _premier_jour()
-        regime_input.value = default_regime_textarea_value(pj)
+        cache = state.setdefault("regime_slot_values", _default_slot_values())
+        for slot in _collect_regime_creneaux_cibles_ordered():
+            cache[slot] = MEAL_PREFIXES[slot]
+        _sync_regime_template_display()
         await _save_current_ui_state()
         ui.notify("Template régime effacé.", type="info")
 
@@ -1117,14 +1207,16 @@ def create_drive_view():
         regime_mode_radio.value = "consignes"
         enfants_consignes_input.value = ""
         regime_consignes_input.value = ""
-        meals_input.value = default_meal_textarea_value()
-        regime_input.value = default_regime_textarea_value()
         extras_input.value = ""
         commentaires_input.value = ""
+        state["meal_slot_values"] = _default_slot_values()
+        state["regime_slot_values"] = _default_slot_values()
         _update_enfants_mode_visibility()
         _update_regime_mode_visibility()
         _rebuild_meal_checkboxes()
         _rebuild_regime_checkboxes()
+        _sync_meals_template_display()
+        _sync_regime_template_display()
         state["result"] = None
         state["row_data"] = {}
         state["table"] = None
@@ -1148,8 +1240,14 @@ def create_drive_view():
     reset_col3_btn.on("click", reset_col3)
     enfants_mode_radio.on("update:model-value", lambda _: (_update_enfants_mode_visibility(), _schedule_save()))
     regime_mode_radio.on("update:model-value", lambda _: (_update_regime_mode_visibility(), _schedule_save()))
-    _wire_autosave(meals_input)
-    _wire_autosave(regime_input)
+    meals_input.on(
+        "update:model-value",
+        lambda _: (_capture_meals_from_textarea(), _schedule_save()),
+    )
+    regime_input.on(
+        "update:model-value",
+        lambda _: (_capture_regime_from_textarea(), _schedule_save()),
+    )
     _wire_autosave(enfants_consignes_input)
     _wire_autosave(regime_consignes_input)
     _wire_autosave(extras_input)
