@@ -163,7 +163,9 @@ Prérequis système : `brew install rclone gnupg` · remote rclone `gdrive` conf
 | **`start.command`** | Double-clic sur le Bureau — confort quotidien entrepreneur |
 | **LaunchAgent** | Démarrage automatique au login + relance si crash (`KeepAlive`) |
 
-Le script `start.command` active le venv, purge les `__pycache__`, libère le port 8080 si occupé, lance l'app (`python -B main.py`) et ouvre le navigateur sur `http://localhost:8080`. Variable optionnelle : `TRANKIL_LOG_LEVEL=DEBUG`.
+**Port d'écoute** : par défaut **8080** (`APP_PORT` dans `app/config.py`). Au démarrage, `resolve_listen_port()` teste la disponibilité : si 8080 est occupé, l'app bascule sur le premier port libre suivant (8081…8099, jusqu'à 20 tentatives). NiceGUI ouvre le navigateur sur le port effectivement utilisé ; un avertissement est loggé si le port diffère du défaut. Surcharge explicite : `TRANKIL_PORT` ou `APP_PORT` — erreur si le port demandé est déjà pris.
+
+Le script `start.command` active le venv, purge les `__pycache__`, tente de libérer le port 8080 si une instance IA-Secretaire y tourne déjà, lance l'app (`python -B main.py`). Variables optionnelles : `TRANKIL_LOG_LEVEL=DEBUG`, `TRANKIL_PORT=9000`.
 
 #### 2.4.1 Service LaunchAgent (macOS)
 
@@ -1161,7 +1163,7 @@ IA_Personal_Secretaire/          # dépôt git
 ├── config.yaml.example          # modèle SMTP Gmail → ~/Trankil-v2/config.yaml
 ├── start.command                # double-clic Bureau (purge __pycache__ + python -B)
 ├── app/
-│   ├── config.py                # constantes (ROOT_PATH fixe)
+│   ├── config.py                # constantes (ROOT_PATH, APP_PORT, resolve_listen_port)
 │   ├── db/
 │   │   ├── connection.py
 │   │   ├── schema.sql
@@ -1274,6 +1276,7 @@ IA_Personal_Secretaire/          # dépôt git
 - [x] **Multi-IA** : sélecteur Gemini / OpenRouter (Éco) + clés dans Paramètres
 - [x] Migration SDK **`google-genai`** · modèle `gemini-2.5-flash` · température 0
 - [x] Gestion erreurs lifecycle NiceGUI (`inbox_ui_safe`)
+- [x] **Port d'écoute dynamique** — fallback automatique si 8080 occupé (`resolve_listen_port`)
 - [x] Suggestions IA (`suggestion`, `justification_proof`)
 - [x] Tâches manuelles + colonnes récurrence SQLite
 - [x] Cartes Kanban : affichage **date événement**

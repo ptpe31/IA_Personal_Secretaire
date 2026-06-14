@@ -9,7 +9,7 @@ import sys
 
 from nicegui import ui
 
-from app.config import APP_PORT, APP_TITLE, initialize_app_data
+from app.config import APP_TITLE, initialize_app_data, resolve_listen_port
 from app.services.inbox_queue import register_inbox_queue_startup
 from app.services.notification_scheduler import start_notification_scheduler
 from app.ui.dashboard_view import create_dashboard_view
@@ -113,9 +113,12 @@ def main() -> None:
     register_inbox_queue_startup()
     create_shell()
 
+    port = resolve_listen_port()
+    logger.info("Serveur sur http://localhost:%d", port)
+
     ui.run(
         title=APP_TITLE,
-        port=APP_PORT,
+        port=port,
         reload=False,
         show=True,
         favicon="📥",

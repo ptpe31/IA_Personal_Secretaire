@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Chemin racine fixe V1 (spec §3.3)
 ROOT_PATH: Path = Path.home() / "Trankil-v2"
@@ -47,7 +51,55 @@ IA_PROVIDER_OPTIONS: tuple[str, ...] = (IA_PROVIDER_GEMINI, IA_PROVIDER_OPENROUT
 
 # NiceGUI
 APP_PORT: int = 8080
+APP_PORT_FALLBACK_ATTEMPTS: int = 20
 APP_TITLE: str = "IA-Secretaire"
+
+
+def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
+    """Vérifie si un port TCP est libre pour l'écoute."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def resolve_listen_port(
+    preferred: int = APP_PORT,
+    *,
+    max_attempts: int = APP_PORT_FALLBACK_ATTEMPTS,
+) -> int:
+    """
+    Retourne le port d'écoute NiceGUI.
+
+    Priorité : TRANKIL_PORT / APP_PORT (env) → port préféré → ports suivants.
+    """
+    load_dotenv()
+    env_port = os.environ.get("TRANKIL_PORT") or os.environ.get("APP_PORT")
+    if env_port:
+        port = int(env_port)
+        if not is_port_available(port):
+            raise OSError(
+                f"Port {port} déjà utilisé (variable TRANKIL_PORT ou APP_PORT)."
+            )
+        return port
+
+    for offset in range(max_attempts):
+        port = preferred + offset
+        if is_port_available(port):
+            if offset:
+                logger.warning(
+                    "Port %d occupé — écoute sur http://localhost:%d",
+                    preferred,
+                    port,
+                )
+            return port
+
+    raise OSError(
+        f"Aucun port disponible entre {preferred} et {preferred + max_attempts - 1}."
+    )
 
 # Email SMTP (relances J-1) — surchargeables via ~/Trankil-v2/config.yaml et .env
 DEFAULT_SMTP_SERVER: str = "smtp.gmail.com"
