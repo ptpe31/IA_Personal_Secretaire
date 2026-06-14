@@ -920,7 +920,7 @@ Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_d
 - Factory **`get_drive_analysis_client()`** : Gemini ou OpenRouter selon `active_ia_provider` (Paramètres) — **pas Ollama, pas Mock**.
 - Repli croisé cloud si le provider choisi est indisponible.
 - Modèle Pydantic `DriveMenuAnalysisResult` : `planning_repas[]` + `planning_regime[]` (`PlanningRepasItem` : `jour`, `moment`, `plat`, `batch_cooking_dimanche`, `action_minute`) + `liste_courses[]` (`CourseItem`).
-- **Batch cooking unifié** : l'IA rédige `batch_cooking_dimanche` comme un bloc opérationnel compact par jour ; texte identique enfant/hôte lorsque la préparation dimanche est commune (affichage PDF fusionné par jour).
+- **Batch cooking unifié** : l'IA rédige `batch_cooking_dimanche` (préparation le **premier jour de la semaine**, clé JSON historique) comme un bloc opérationnel compact par jour ; texte identique enfant/hôte lorsque la préparation est commune (affichage PDF fusionné par jour).
 - **L'IA ne génère plus de HTML** — data JSON pure uniquement ; le template HTML/CSS printanier est assemblé côté Python (`drive_pdf_service.render_planning_html`).
 - Mots-clés épurés (ex. `oeufs`, `jambon blanc`) sans packaging (`douzaine`, `en tranche`, etc.).
 - Date du planning calculée par Python (`compute_menu_week_sunday`) — injectée dans le prompt user et le PDF local.
@@ -951,7 +951,7 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 - **Template HTML local** (`drive_pdf_service.py`) — grille **jours en colonnes**, sous-colonnes **Midi | Soir** :
   - Ligne **Enfants** : plat + action jour J par créneau
   - Ligne **Convives régime** : plat + action jour J par créneau (même bloc, visuellement séparé)
-  - Ligne **Batch dimanche** : un bloc unifié par jour (`colspan=2`), fusion des textes identiques enfant/hôte
+  - Ligne **Batch {premier jour}** : un bloc unifié par jour (`colspan=2`), texte blanc sur fond vert ; colonne du premier jour de la semaine en **gras**
   - Seuls les jours contenant au moins un créneau planifié sont affichés
 - Même rendu à l'écran (carte Planning Batch Cooking) et en PDF. Format A4 paysage. CSS printanier fixe (#166534, #f0fdf4).
 - WeasyPrint → `~/Trankil-v2/Perso/GED/` avec nommage GED standard.

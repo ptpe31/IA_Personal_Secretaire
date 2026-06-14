@@ -85,12 +85,22 @@ tbody td {
 tbody tr.row-enfants td.slot-cell { background: #ffffff; }
 tbody tr.row-regime td.slot-cell { background: #f0fdf4; }
 tbody tr.row-batch td {
-    background: #ecfdf5;
-    border-top: 2px solid #86efac;
+    border-top: 2px solid #14532d;
 }
 tbody tr.row-batch td.col-audience {
     background: #166534;
+    color: #ffffff;
+    font-weight: 700;
     font-size: 7pt;
+}
+tbody tr.row-batch td.batch-unified {
+    background: #166534;
+    color: #ffffff;
+    font-size: 7.5pt;
+    line-height: 1.35;
+}
+tbody tr.row-batch td.batch-unified.batch-premier-jour {
+    font-weight: 700;
 }
 .slot-cell .plat {
     font-weight: 600;
@@ -100,11 +110,6 @@ tbody tr.row-batch td.col-audience {
 .slot-cell .action {
     font-size: 7pt;
     color: #166534;
-}
-.batch-unified {
-    font-size: 7.5pt;
-    line-height: 1.35;
-    color: #14532d;
 }
 """
 
@@ -165,6 +170,7 @@ def _unified_batch_for_day(
 def _render_planning_grid(
     *,
     days: tuple[PlanningJourType, ...],
+    premier_jour: str,
     enfants_by_slot: dict[tuple[str, str], PlanningRepasItem],
     regime_by_slot: dict[tuple[str, str], PlanningRepasItem],
 ) -> str:
@@ -188,10 +194,15 @@ def _render_planning_grid(
         f'<td class="slot-cell">{_meal_cell_html(regime_by_slot.get((day, "Soir")))}</td>'
         for day in days
     )
-    batch_cells = "".join(
-        f'<td colspan="2" class="batch-unified">{escape_html(_unified_batch_for_day(day, enfants_by_slot=enfants_by_slot, regime_by_slot=regime_by_slot))}</td>'
-        for day in days
-    )
+    batch_cells: list[str] = []
+    for day in days:
+        extra = " batch-premier-jour" if day == premier_jour else ""
+        text = escape_html(
+            _unified_batch_for_day(day, enfants_by_slot=enfants_by_slot, regime_by_slot=regime_by_slot)
+        )
+        batch_cells.append(f'<td colspan="2" class="batch-unified{extra}">{text}</td>')
+    batch_row = "".join(batch_cells)
+    batch_label = escape_html(f"Batch {premier_jour.lower()}")
 
     return f"""<table>
     <thead>
@@ -213,8 +224,8 @@ def _render_planning_grid(
         {regime_cells}
       </tr>
       <tr class="row-batch">
-        <td class="col-audience">Batch<br/>dimanche</td>
-        {batch_cells}
+        <td class="col-audience"><strong>{batch_label}</strong></td>
+        {batch_row}
       </tr>
     </tbody>
   </table>"""
@@ -238,6 +249,7 @@ def render_planning_html(
     days = _active_planning_days(result, premier_jour=premier_jour_semaine)
     grid_html = _render_planning_grid(
         days=days,
+        premier_jour=premier_jour_semaine,
         enfants_by_slot=enfants_by_slot,
         regime_by_slot=regime_by_slot,
     )

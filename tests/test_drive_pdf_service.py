@@ -30,6 +30,7 @@ def test_render_planning_html_contains_data_not_template_noise():
         semaine_label="07/06/2026",
         nb_convives_enfants=4,
         nb_convives_regime=2,
+        premier_jour_semaine="Mercredi",
     )
     assert "Colombo de poulet" in html
     assert "Mariner les blancs" in html
@@ -37,7 +38,9 @@ def test_render_planning_html_contains_data_not_template_noise():
     assert "Semaine du 07/06/2026" in html
     assert "Convives enfants : 4" in html
     assert "Enfants" in html
-    assert "Batch" in html
+    assert "Batch mercredi" in html
+    assert "batch-premier-jour" in html
+    assert "color: #ffffff" in html
     assert ">Lundi<" in html
     assert ">Midi<" in html
     assert ">Soir<" in html

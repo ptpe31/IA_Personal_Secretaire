@@ -25,7 +25,7 @@ Chaque objet contient :
 - "jour" : EXACTEMENT l'une des valeurs : "Dimanche" | "Lundi" | "Mardi" | "Mercredi" | "Jeudi" | "Vendredi" | "Samedi"
 - "moment" : "Midi" ou "Soir" — doit correspondre au créneau (ex. « Mardi soir » → jour "Mardi", moment "Soir")
 - "plat" : nom du plat ENFANT pour ce créneau (attractif pour les enfants)
-- "batch_cooking_dimanche" : préparation dimanche (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur.
+- "batch_cooking_dimanche" : préparation en avance le **premier jour de la semaine** (découpe, cuisson, marinade, portionnage, congélation). Optimise Four, Air Fryer et Congélateur. (Clé JSON historique — ne pas renommer.)
 - "action_minute" : action jour J (réchauffer, assembler, accompagnement frais, cuisson rapide)
 
 BATCH COOKING UNIFIÉ : pour chaque jour, rédige batch_cooking_dimanche comme un seul bloc opérationnel compact (instructions séparées par « · » si besoin).
@@ -191,7 +191,7 @@ def build_drive_user_prompt(payload: DriveMenuInput) -> str:
         f"Premier jour de la semaine : {premier_jour}",
         f"Ordre des jours à respecter : {' → '.join(week_days)}",
         "Présente le batch cooking et les actions minute en suivant cette chronologie.",
-        "Le batch cooking dimanche doit être unifié par jour lorsque la préparation est commune aux enfants et à l'hôte régime.",
+        "Le batch cooking (premier jour de la semaine) doit être unifié par jour lorsque la préparation est commune aux enfants et à l'hôte régime.",
         "",
         "═══ CONVIVES ENFANTS (plats) ═══",
         f"{payload.nb_convives_enfants} personnes",
