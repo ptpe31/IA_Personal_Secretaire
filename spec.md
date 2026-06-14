@@ -942,9 +942,34 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 | Colonne | Comportement |
 |---------|--------------|
 | Checkbox | Coché par défaut ; décocher exclut du robot |
-| Quantité | `ui.number` éditable |
+| Besoin | Quantité recette (lecture seule) |
 | Article | `mot_cle` IA |
-| Lien Leclerc Drive | URL mémorisée (`drive_mapping.json`) ou champ vide bordure orange ; collage → sauvegarde immédiate mapping |
+| Cont. 1 pqt | Saisie locale (contenance du paquet) — pas de sync serveur à chaque frappe |
+| Unité | `q-select` (g / kg / ml / L / u) — vide par défaut si non mémorisé |
+| Commande | Affiche `—` pendant l'édition ; calcul uniquement à la validation (§ 8.3.2) |
+| Lien direct | URL fiche produit — saisie locale ; bordure orange si vide |
+
+**Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Seule la checkbox « actif » remonte immédiatement vers Python. Avant toute sauvegarde UI (`row_states`), un **flush** client → serveur synchronise toutes les lignes.
+
+#### 8.3.2 Validation modale avant robot
+
+Avant d'ouvrir le navigateur (**LANCER LE ROBOT …**) ou de démarrer les courses (**▶️ DÉMARRER LES COURSES**), une modale affiche :
+
+- Titre : « Valider la liste de courses ? »
+- Résumé : *N* article(s) commandable(s) · *P* paquet(s)
+- Tableau récap : Article | Besoin | Cont. | Unité | Commande (articles retenus uniquement)
+- Si des lignes actives ne sont pas commandables (URL / contenance / unité manquantes, incompatibilité) : *« X article(s) seront ignorés. »* (sans détail par article)
+- **Non, continuer l'édition** → fermeture, liste éditable
+- **Oui** → flush, calcul `determiner_nb_clics`, persistance `drive_mapping.json`, puis action robot
+
+| Bouton | Après « Oui » |
+|--------|----------------|
+| LANCER LE ROBOT … | Ouverture Playwright + pause connexion magasin |
+| ▶️ DÉMARRER LES COURSES | `signal_resume` avec la liste validée — début des ajouts panier |
+
+« Oui » est désactivé implicitement s'il n'y a **aucun** article commandable. Mode **souple** : les articles incomplets sont ignorés sans bloquer le lancement.
+
+Mapping `drive_mapping.json` : écriture **au commit** (validation Oui), plus à chaque frappe.
 
 ### 8.4 Export PDF
 
@@ -962,6 +987,7 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 
 | Phase | Comportement |
 |-------|--------------|
+| Validation | Modale § 8.3.2 — liste flushée, commandes calculées, mapping persisté |
 | Connexion | `launch_persistent_context` sur `~/.leclerc_profile` ; ouverture magasin Roques-sur-Garonne ; pause `[▶️ Démarrer les courses]` |
 | Courses | **Uniquement bypass URL** : pour chaque article coché avec URL, `page.goto(url#plus)` × `quantite` — ajout auto panier Leclerc ; **aucune recherche** pour produits mémorisés |
 | Sans URL | Produit reporté dans `produits_a_valider` sans bloquer la boucle |
@@ -971,7 +997,7 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 
 Modèle robot : `DriveShoppingItem` (`CourseItem` + `product_url` optionnelle).
 
-Mapping : `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name } }` — URLs stockées sans `#plus`.
+Mapping : `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name, contenance_paquet, unite_paquet } }` — URLs stockées sans `#plus` ; écriture au **commit validation** (§ 8.3.2).
 
 Simulation humaine : pauses 1,5–3,0 s après chaque `#plus`. Logs préfixés `[LeclercBot]`.
 

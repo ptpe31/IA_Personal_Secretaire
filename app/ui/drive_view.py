@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from nicegui import ui
@@ -18,7 +19,6 @@ from app.models.drive import (
     MEAL_PREFIXES,
     PREMIER_JOUR_DEFAUT,
     RAYON_ORDER,
-    UNITE_MESURE_OPTIONS,
     CourseItem,
     DriveMenuAnalysisResult,
     DrivePlatformId,
@@ -60,6 +60,16 @@ from app.ui.tab_registry import register_tab_refresh
 
 logger = logging.getLogger(__name__)
 
+_COMMANDE_PLACEHOLDER = "—"
+
+_VALIDATION_TABLE_COLUMNS = [
+    {"name": "article", "label": "Article", "field": "article", "align": "left"},
+    {"name": "besoin", "label": "Besoin", "field": "besoin", "align": "right"},
+    {"name": "contenance", "label": "Cont.", "field": "contenance", "align": "center"},
+    {"name": "unite", "label": "Unité", "field": "unite", "align": "center"},
+    {"name": "commande", "label": "Commande", "field": "commande", "align": "center"},
+]
+
 _DRIVE_TABLE_COLUMNS = [
     {"name": "actif", "label": "", "field": "actif", "align": "center", "style": "width: 44px"},
     {"name": "besoin", "label": "Besoin", "field": "besoin", "align": "right", "style": "width: 80px"},
@@ -76,6 +86,25 @@ _DRIVE_TABLE_COLUMNS = [
     {"name": "url", "label": "Lien direct", "field": "url", "align": "left", "style": "min-width: 160px"},
     {"name": "rayon", "label": "", "field": "rayon", "style": "display:none"},
 ]
+
+
+@dataclass
+class DriveValidationReport:
+    recap_rows: list[dict[str, Any]]
+    items: list[DriveShoppingItem]
+    active_count: int
+    orderable_count: int
+    ignored_count: int
+    total_paquets: int
+
+
+def _parse_contenance(value: Any) -> float:
+    if value is None or value == "":
+        return 0.0
+    try:
+        return max(0.0, float(str(value).replace(",", ".").strip()))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def create_drive_view():
@@ -503,6 +532,7 @@ def create_drive_view():
         async def _debounced() -> None:
             try:
                 await asyncio.sleep(0.35)
+                await _flush_table_to_state()
                 await _save_current_ui_state()
             except asyncio.CancelledError:
                 pass
@@ -531,7 +561,7 @@ def create_drive_view():
         row_contenance: float,
         row_unite: str,
     ) -> tuple[float, str]:
-        unite = row_unite or mapping.get("unite_paquet") or course.unite_recette
+        unite = row_unite or str(mapping.get("unite_paquet") or "")
         if not url.strip():
             return 0.0, unite
         if row_contenance > 0:
@@ -549,6 +579,8 @@ def create_drive_view():
         }
 
     def _calc_commande(course: CourseItem, contenance: float, unite: str, mapping: dict[str, Any]) -> int:
+        if not str(unite or "").strip() or contenance <= 0:
+            return 0
         return determiner_nb_clics(course, _preview_mapping(course, contenance, unite, mapping))
 
     def _default_row_actif(url: str) -> bool:
@@ -566,11 +598,7 @@ def create_drive_view():
         if saved_row:
             url = str(saved_row.get("url") or url)
             contenance = float(saved_row.get("contenance", 0))
-            unite = str(
-                saved_row.get("unite")
-                or mapping.get("unite_paquet")
-                or course.unite_recette
-            )
+            unite = str(saved_row.get("unite") or mapping.get("unite_paquet") or "")
             if actif is None:
                 actif = bool(saved_row.get("actif", _default_row_actif(url)))
         else:
@@ -579,14 +607,12 @@ def create_drive_view():
             contenance, unite = _resolve_row_packaging(
                 course, mapping, url=url, row_contenance=0.0, row_unite=""
             )
-        commande = _calc_commande(course, contenance, unite, mapping)
         state["row_data"][row_id] = {
             "course": course,
             "actif": actif,
             "contenance": contenance,
             "unite": unite,
             "url": url,
-            "commande": commande,
         }
         return {
             "id": row_id,
@@ -595,7 +621,7 @@ def create_drive_view():
             "article": format_article_display(course),
             "contenance": contenance,
             "unite": unite,
-            "commande": commande,
+            "commande": _COMMANDE_PLACEHOLDER,
             "url": url,
             "rayon": course.rayon,
         }
@@ -633,139 +659,250 @@ def create_drive_view():
         table.update()
         _schedule_save()
 
+    async def _flush_table_to_state() -> None:
+        table = state.get("table")
+        if table is None:
+            return
+        try:
+            rows = await ui.run_javascript(
+                f"""
+                const el = getElement({table.id});
+                if (!el || !el.rows) return [];
+                return el.rows
+                    .filter(r => r && !r._section)
+                    .map(r => ({{
+                        id: String(r.id),
+                        actif: !!r.actif,
+                        contenance: r.contenance,
+                        unite: r.unite != null ? String(r.unite) : '',
+                        url: r.url != null ? String(r.url) : '',
+                    }}));
+                """,
+            )
+        except Exception:
+            logger.exception("Flush tableau Drive échoué")
+            return
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            row_id = str(row.get("id") or "")
+            if not row_id or row_id.startswith("__section__"):
+                continue
+            row_data = state["row_data"].get(row_id)
+            if row_data is None:
+                continue
+            row_data["actif"] = bool(row.get("actif", True))
+            row_data["contenance"] = _parse_contenance(row.get("contenance"))
+            row_data["unite"] = str(row.get("unite") or "").strip()
+            raw_url = str(row.get("url") or "").strip()
+            normalized = normalize_product_url(raw_url) if raw_url else ""
+            row_data["url"] = normalized or raw_url
+            _sync_table_fields_inplace(
+                row_id,
+                actif=row_data["actif"],
+                contenance=row_data["contenance"],
+                unite=row_data["unite"],
+                url=row_data["url"],
+            )
+
+    def _sync_table_fields_inplace(row_id: str, **fields: Any) -> None:
+        table = state.get("table")
+        row_data = state["row_data"].get(row_id)
+        if table is None or row_data is None:
+            return
+        for key, value in fields.items():
+            row_data[key] = value
+        for row in table.rows:
+            if row.get("id") == row_id:
+                for key, value in fields.items():
+                    row[key] = value
+                break
+
     def _on_drive_row_update(event) -> None:
         args = event.args or {}
         row_id = args.get("id")
         field = args.get("field")
         value = args.get("value")
-        if not row_id or not field or row_id.startswith("__section__"):
+        if not row_id or field != "actif" or row_id.startswith("__section__"):
             return
         row_data = state["row_data"].get(row_id)
         if row_data is None:
             return
-        course: CourseItem = row_data["course"]
-        if field == "actif":
-            row_data["actif"] = bool(value)
-        elif field == "contenance":
-            row_data["contenance"] = max(0.0, float(value if value is not None else 0))
-            if (row_data.get("url") or "").strip() and row_data["contenance"] > 0:
-                save_mapping_entry(
-                    course.mot_cle,
-                    platform=_platform(),
-                    product_name=course.libelle,
-                    product_url=normalize_product_url(row_data["url"]),
-                    contenance_paquet=row_data["contenance"],
-                    unite_paquet=row_data["unite"],
-                )
-        elif field == "unite":
-            row_data["unite"] = str(value)
-            if (row_data.get("url") or "").strip():
-                save_mapping_entry(
-                    course.mot_cle,
-                    platform=_platform(),
-                    product_name=course.libelle,
-                    product_url=normalize_product_url(row_data["url"]),
-                    contenance_paquet=row_data["contenance"] if row_data["contenance"] > 0 else None,
-                    unite_paquet=row_data["unite"],
-                )
-        elif field == "url":
-            row_data["url"] = str(value or "")
-            normalized = normalize_product_url(row_data["url"])
-            if normalized:
-                row_data["url"] = normalized
-                row_data["actif"] = True
-                save_mapping_entry(
-                    course.mot_cle,
-                    platform=_platform(),
-                    product_name=course.libelle,
-                    product_url=normalized,
-                    contenance_paquet=row_data["contenance"] if row_data["contenance"] > 0 else None,
-                    unite_paquet=row_data["unite"],
-                )
-            else:
-                row_data["contenance"] = 0.0
-                row_data["actif"] = False
-        mapping = _store_mapping(course.mot_cle)
-        row_data["commande"] = _calc_commande(
-            course, row_data["contenance"], row_data["unite"], mapping
-        )
-        _sync_table_row_from_state(row_id)
+        row_data["actif"] = bool(value)
+        _sync_table_fields_inplace(row_id, actif=row_data["actif"])
         _schedule_save()
 
-    def _sync_table_row_from_state(row_id: str) -> None:
-        table = state.get("table")
-        row_data = state["row_data"].get(row_id)
-        if table is None or row_data is None:
-            return
-        for row in table.rows:
-            if row.get("id") == row_id:
-                row["actif"] = row_data["actif"]
-                row["contenance"] = row_data["contenance"]
-                row["unite"] = row_data["unite"]
-                row["url"] = row_data["url"]
-                row["commande"] = row_data["commande"]
-                break
-        table.update()
+    def _row_shopping_item(row_data: dict[str, Any]) -> DriveShoppingItem | None:
+        if not row_data.get("actif", True):
+            return None
+        course: CourseItem = row_data["course"]
+        raw_url = (row_data.get("url") or "").strip()
+        if not raw_url:
+            raw_url = str((_store_mapping(course.mot_cle) or {}).get("product_url") or "")
+        product_url = normalize_product_url(raw_url) or None
+        if not product_url:
+            return None
+        mapping = _store_mapping(course.mot_cle)
+        contenance = float(row_data.get("contenance", 0))
+        unite = str(row_data.get("unite") or "").strip()
+        if not unite:
+            unite = str(mapping.get("unite_paquet") or "").strip()
+        if contenance <= 0:
+            stored = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+            if stored:
+                contenance = float(stored)
+        if contenance <= 0 or not unite:
+            return None
+        nb_paquets = _calc_commande(course, contenance, unite, mapping)
+        if nb_paquets <= 0:
+            return None
+        return DriveShoppingItem(
+            mot_cle=course.mot_cle,
+            libelle=course.libelle,
+            rayon=course.rayon,
+            quantite_recette=course.quantite_recette,
+            unite_recette=course.unite_recette,
+            product_url=product_url,
+            nb_paquets=nb_paquets,
+        )
+
+    def _build_validation_report() -> DriveValidationReport:
+        recap_rows: list[dict[str, Any]] = []
+        items: list[DriveShoppingItem] = []
+        active_count = 0
+        ignored_count = 0
+        total_paquets = 0
+        for row_data in state.get("row_data", {}).values():
+            if not row_data.get("actif", True):
+                continue
+            active_count += 1
+            item = _row_shopping_item(row_data)
+            if item is None:
+                ignored_count += 1
+                continue
+            course: CourseItem = row_data["course"]
+            mapping = _store_mapping(course.mot_cle)
+            contenance = float(row_data.get("contenance", 0))
+            unite = str(row_data.get("unite") or mapping.get("unite_paquet") or "").strip()
+            if contenance <= 0:
+                stored = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+                if stored:
+                    contenance = float(stored)
+            total_paquets += item.nb_paquets
+            items.append(item)
+            recap_rows.append(
+                {
+                    "article": format_article_display(course),
+                    "besoin": format_besoin(course),
+                    "contenance": contenance,
+                    "unite": unite,
+                    "commande": item.nb_paquets,
+                }
+            )
+        return DriveValidationReport(
+            recap_rows=recap_rows,
+            items=items,
+            active_count=active_count,
+            orderable_count=len(items),
+            ignored_count=ignored_count,
+            total_paquets=total_paquets,
+        )
+
+    def _persist_mappings_from_row_data() -> None:
+        platform = _platform()
+        for row_data in state.get("row_data", {}).values():
+            if not row_data.get("actif", True):
+                continue
+            course: CourseItem = row_data["course"]
+            raw_url = (row_data.get("url") or "").strip()
+            product_url = normalize_product_url(raw_url)
+            if not product_url:
+                continue
+            contenance = float(row_data.get("contenance", 0))
+            unite = str(row_data.get("unite") or "").strip()
+            if contenance <= 0 or not unite:
+                continue
+            save_mapping_entry(
+                course.mot_cle,
+                platform=platform,
+                product_name=course.libelle,
+                product_url=product_url,
+                contenance_paquet=contenance,
+                unite_paquet=unite,
+            )
+
+    async def _open_validation_dialog(
+        report: DriveValidationReport,
+        *,
+        confirm_label: str,
+    ) -> bool:
+        with ui.dialog() as dialog, ui.card().classes("q-pa-md").style(
+            "min-width: 480px; max-width: 720px"
+        ):
+            ui.label("Valider la liste de courses ?").classes("text-h6 q-mb-sm")
+            ui.label(
+                f"{report.orderable_count} article(s) commandable(s) · "
+                f"{report.total_paquets} paquet(s)"
+            ).classes("text-body2 text-grey-8 q-mb-md")
+            ui.table(
+                columns=_VALIDATION_TABLE_COLUMNS,
+                rows=report.recap_rows,
+                pagination=0,
+            ).props("dense flat bordered").classes("w-full q-mb-md")
+            if report.ignored_count > 0:
+                ui.label(f"{report.ignored_count} article(s) seront ignorés.").classes(
+                    "text-body2 text-orange-9 q-mb-md"
+                )
+            with ui.row().classes("w-full justify-end q-gutter-sm"):
+                ui.button("Non, continuer l'édition", on_click=dialog.close).props("flat")
+                ui.button(confirm_label, on_click=lambda: dialog.submit(True)).props(
+                    "color=primary unelevated"
+                )
+        result = await dialog
+        return bool(result)
+
+    async def _request_validation(
+        *,
+        confirm_label: str,
+    ) -> DriveValidationReport | None:
+        await _flush_table_to_state()
+        report = _build_validation_report()
+        if report.orderable_count == 0:
+            ui.notify("Aucun article commandable dans la liste de courses.", type="warning")
+            return None
+        if not await _open_validation_dialog(report, confirm_label=confirm_label):
+            return None
+        _persist_mappings_from_row_data()
+        _schedule_save()
+        return _build_validation_report()
 
     def _update_row_url(mot_cle: str, url: str) -> None:
         for row_id, row_data in state.get("row_data", {}).items():
             course: CourseItem = row_data["course"]
             if course.mot_cle == mot_cle:
-                row_data["url"] = url
                 mapping = _store_mapping(course.mot_cle)
                 if not url.strip():
-                    row_data["contenance"] = 0.0
-                    row_data["actif"] = False
+                    _sync_table_fields_inplace(
+                        row_id,
+                        url="",
+                        contenance=0.0,
+                        actif=False,
+                    )
                 else:
-                    row_data["actif"] = True
                     contenance, unite = _resolve_row_packaging(
                         course,
                         mapping,
                         url=url,
                         row_contenance=float(row_data.get("contenance", 0)),
-                        row_unite=str(row_data.get("unite", course.unite_recette)),
+                        row_unite=str(row_data.get("unite", "")),
                     )
-                    row_data["contenance"] = contenance
-                    row_data["unite"] = unite
-                row_data["commande"] = _calc_commande(
-                    course, row_data["contenance"], row_data["unite"], mapping
-                )
-                _sync_table_row_from_state(row_id)
-
-    def _get_shopping_items() -> list[DriveShoppingItem]:
-        result: DriveMenuAnalysisResult | None = state.get("result")
-        if result is None:
-            return []
-        items: list[DriveShoppingItem] = []
-        for row_id, row_data in state.get("row_data", {}).items():
-            if not row_data.get("actif", True):
-                continue
-            course: CourseItem = row_data["course"]
-            raw_url = (row_data.get("url") or "").strip()
-            if not raw_url:
-                raw_url = (_store_mapping(course.mot_cle) or {}).get("product_url", "")
-            mapping = _store_mapping(course.mot_cle)
-            contenance, unite = _resolve_row_packaging(
-                course,
-                mapping,
-                url=raw_url,
-                row_contenance=float(row_data.get("contenance", 0)),
-                row_unite=str(row_data.get("unite", course.unite_recette)),
-            )
-            preview = _preview_mapping(course, contenance, unite, mapping)
-            nb_paquets = determiner_nb_clics(course, preview)
-            items.append(
-                DriveShoppingItem(
-                    mot_cle=course.mot_cle,
-                    libelle=course.libelle,
-                    rayon=course.rayon,
-                    quantite_recette=course.quantite_recette,
-                    unite_recette=course.unite_recette,
-                    product_url=normalize_product_url(raw_url) or None,
-                    nb_paquets=nb_paquets,
-                )
-            )
-        return items
+                    _sync_table_fields_inplace(
+                        row_id,
+                        url=url,
+                        contenance=contenance,
+                        unite=unite,
+                        actif=True,
+                    )
 
     def _set_launch_enabled(enabled: bool) -> None:
         launch_btn.enable() if enabled else launch_btn.disable()
@@ -848,11 +985,10 @@ def create_drive_view():
             "body-cell-contenance",
             r"""
             <q-td :props="props" auto-width class="q-pa-xs">
-                <q-input v-if="!props.row._section" dense outlined type="number" min="0" step="0.1"
+                <q-input v-if="!props.row._section" dense outlined type="text" inputmode="decimal"
                     style="width:76px;font-size:12px"
                     :model-value="props.row.contenance"
-                    @update:model-value="v => $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'contenance', value: v })"
-                    @blur="() => $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'contenance', value: props.row.contenance })" />
+                    @update:model-value="v => { props.row.contenance = v }" />
             </q-td>
             """,
         )
@@ -862,10 +998,9 @@ def create_drive_view():
             <q-td :props="props" auto-width class="q-pa-xs">
                 <q-select v-if="!props.row._section" dense outlined emit-value map-options
                     style="width:68px;font-size:12px"
-                    :options="[{label:'g',value:'g'},{label:'kg',value:'kg'},{label:'ml',value:'ml'},{label:'L',value:'L'},{label:'u',value:'u'}]"
+                    :options="[{label:'—',value:''},{label:'g',value:'g'},{label:'kg',value:'kg'},{label:'ml',value:'ml'},{label:'L',value:'L'},{label:'u',value:'u'}]"
                     :model-value="props.row.unite"
-                    @update:model-value="v => $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'unite', value: v })"
-                    @blur="() => $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'unite', value: props.row.unite })" />
+                    @update:model-value="v => { props.row.unite = v }" />
             </q-td>
             """,
         )
@@ -873,7 +1008,7 @@ def create_drive_view():
             "body-cell-commande",
             r"""
             <q-td :props="props" auto-width class="text-center">
-                <span v-if="!props.row._section" class="trankil-drive-commande-badge">{{ props.row.commande }}</span>
+                <span v-if="!props.row._section" class="trankil-drive-commande-badge text-grey-6">{{ props.row.commande }}</span>
             </q-td>
             """,
         )
@@ -885,7 +1020,7 @@ def create_drive_view():
                     style="font-size:12px;min-width:140px"
                     :class="!props.row.url ? 'trankil-drive-url-missing' : ''"
                     :model-value="props.row.url"
-                    @update:model-value="v => $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'url', value: v })" />
+                    @update:model-value="v => { props.row.url = v }" />
             </q-td>
             """,
         )
@@ -1091,20 +1226,9 @@ def create_drive_view():
             generate_btn.enable()
             spinner_row.set_visibility(False)
 
-    async def launch_robot() -> None:
-        if state.get("robot_task") and not state["robot_task"].done():
-            ui.notify("Le robot est déjà en cours d'exécution.", type="warning")
-            return
+    async def _start_robot(items: list[DriveShoppingItem]) -> None:
         platform = _platform()
         cfg = DRIVE_PLATFORMS[platform]
-        if not cfg.get("available"):
-            ui.notify(f"{cfg['label']} — bientôt disponible.", type="warning")
-            return
-        items = _get_shopping_items()
-        if not items:
-            ui.notify("Aucun article sélectionné dans la liste de courses.", type="warning")
-            return
-
         try:
             driver = create_drive_driver(
                 platform,
@@ -1146,6 +1270,22 @@ def create_drive_view():
         state["robot_task"] = asyncio.create_task(_run())
         ui.notify(f"{cfg['label']} lancé — fenêtre navigateur ouverte.", type="info")
 
+    async def launch_robot() -> None:
+        if state.get("robot_task") and not state["robot_task"].done():
+            ui.notify("Le robot est déjà en cours d'exécution.", type="warning")
+            return
+        platform = _platform()
+        cfg = DRIVE_PLATFORMS[platform]
+        if not cfg.get("available"):
+            ui.notify(f"{cfg['label']} — bientôt disponible.", type="warning")
+            return
+        report = await _request_validation(
+            confirm_label=f"Oui, {cfg['label']}",
+        )
+        if report is None:
+            return
+        await _start_robot(report.items)
+
     async def cancel_robot() -> None:
         task = state.get("robot_task")
         if task is None or task.done():
@@ -1165,14 +1305,15 @@ def create_drive_view():
                 type="warning",
             )
             return
-        updated_items = _get_shopping_items()
-        if not updated_items:
-            ui.notify("Aucun article coché dans la liste de courses.", type="warning")
+        report = await _request_validation(
+            confirm_label="Oui, démarrer les courses",
+        )
+        if report is None:
             return
-        await driver.signal_resume(updated_items)
+        await driver.signal_resume(report.items)
         _set_resume_enabled(False)
         ui.notify(
-            f"Courses démarrées — {len(updated_items)} article(s) synchronisé(s) depuis le tableau.",
+            f"Courses démarrées — {len(report.items)} article(s) synchronisé(s) depuis le tableau.",
             type="positive",
         )
 
