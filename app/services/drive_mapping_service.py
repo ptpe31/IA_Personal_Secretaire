@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _PRODUCT_ID_URL_RE = re.compile(r"/(?:ajout|produit|product|fiche-produits)[-/]?(\d+)", re.I)
 _PRODUCT_ID_QUERY_RE = re.compile(r"[?&](?:productId|id|codeArticle)=(\d+)", re.I)
+_CHRONODRIVE_PRODUCT_ID_RE = re.compile(r"-P(\d+)$", re.I)
 
 _STORE_FIELD_KEYS = frozenset(
     {
@@ -48,13 +49,26 @@ def ensure_plus_url(url: str) -> str:
 
 
 def extract_product_id(url: str) -> str | None:
-    """Extrait un identifiant produit depuis une URL Leclerc Drive."""
+    """Extrait un identifiant produit depuis une URL drive (Leclerc ou Chronodrive)."""
     normalized = normalize_product_url(url)
+    chronodrive_match = _CHRONODRIVE_PRODUCT_ID_RE.search(normalized)
+    if chronodrive_match:
+        return chronodrive_match.group(1)
     for pattern in (_PRODUCT_ID_URL_RE, _PRODUCT_ID_QUERY_RE):
         match = pattern.search(normalized)
         if match:
             return match.group(1)
     return None
+
+
+def is_chronodrive_product_fiche(url: str) -> bool:
+    """True si l'URL ressemble à une fiche produit Chronodrive (suffixe -P{id})."""
+    lower = normalize_product_url(url).lower()
+    if "chronodrive.com" not in lower:
+        return False
+    if any(token in lower for token in ("recherche", "search", "magasins-chronodrive")):
+        return False
+    return bool(_CHRONODRIVE_PRODUCT_ID_RE.search(lower))
 
 
 def is_leclerc_product_fiche(url: str) -> bool:

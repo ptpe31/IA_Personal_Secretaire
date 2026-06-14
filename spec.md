@@ -108,7 +108,7 @@ google-auth-oauthlib
 Pillow                   # preview images
 pillow-heif              # support HEIC (photos iPhone)
 pdf2image                # PDF → image (requiert Poppler)
-playwright>=1.49         # Robot Leclerc Drive (Menu & Drive)
+playwright>=1.49         # Robots Drive Leclerc + Chronodrive (Menu & Drive)
 weasyprint>=62.0         # Export PDF planning batch cooking
 pypdf                    # métadonnées PDF (optionnel)
 ```
@@ -117,7 +117,7 @@ Prérequis système Menu & Drive :
 
 ```bash
 brew install pango gdk-pixbuf libffi   # WeasyPrint (export PDF planning)
-playwright install chromium          # Robot Leclerc Drive
+playwright install chromium          # Robots Drive (Leclerc, Chronodrive)
 ```
 
 Le script `start.command` exporte `DYLD_FALLBACK_LIBRARY_PATH` pour WeasyPrint sur Apple Silicon.
@@ -340,8 +340,9 @@ gpg -d /tmp/database-....sqlite.gz.gpg | gunzip > /tmp/database-restored.sqlite
 | Inbox temporaire | `~/Trankil-v2/.inbox/` (fichiers en attente de validation manuelle) |
 | Config email | `~/Trankil-v2/config.yaml` (optionnel — voir `config.yaml.example`) |
 | Credentials Google | `~/Trankil-v2/.credentials/google_calendar/` (hors git) |
-| Mapping Leclerc Drive | `~/Trankil-v2/drive_mapping.json` (mot-clé → produit mémorisé) |
+| Mapping Drive (multi-enseigne) | `~/Trankil-v2/drive_mapping.json` (mot-clé → produit mémorisé par plateforme) |
 | Profil Playwright Leclerc | `~/Trankil-v2/.leclerc_profile/` (session persistante) |
+| Profil Playwright Chronodrive | `~/Trankil-v2/.chronodrive_profile/` (session persistante Portet) |
 
 Sauvegarde : **Time Machine** sur le Mac ; export zip prévu en version ultérieure.
 
@@ -867,7 +868,16 @@ Exemples :
 
 ## 8. Vue 4 — Menu & Drive
 
-Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planning batch cooking + liste de courses, export PDF vers GED Perso, robot Playwright Leclerc Drive.
+Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planning batch cooking + liste de courses, export PDF vers GED Perso, robots Playwright **Leclerc Drive** et **Chronodrive (Portet)**.
+
+**Plateformes disponibles** (sélecteur « Choisir la plateforme ») :
+
+| ID | Libellé | Robot |
+|----|---------|-------|
+| `leclerc` | Leclerc Drive | `LANCER LE ROBOT LECLERC DRIVE` |
+| `chronodrive` | Chronodrive (Portet) | `LANCER LE ROBOT CHRONODRIVE PORTET` |
+
+Une seule plateforme active à la fois (V1). Le mapping `drive_mapping.json` est **par enseigne** : même mot-clé, URLs et contenances distinctes selon la plateforme sélectionnée. Évolution future possible : cases à cocher multi-drive pour remplir plusieurs paniers en parallèle (comparaison manuelle des totaux).
 
 ### 8.1 Saisie
 
@@ -1002,6 +1012,24 @@ Modèle robot : `DriveShoppingItem` (`CourseItem` + `product_url` optionnelle).
 Mapping : `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name, contenance_paquet, unite_paquet } }` — URLs stockées sans `#plus` ; écriture au **commit validation** (§ 8.3.2).
 
 Simulation humaine : pauses 1,5–3,0 s après chaque `#plus`. Logs préfixés `[LeclercBot]`.
+
+### 8.6 Robot Chronodrive (Portet)
+
+| Phase | Comportement |
+|-------|--------------|
+| Validation | Modale § 8.3.2 — même flux que Leclerc |
+| Connexion | 1er clic validé → `launch_persistent_context` sur `~/.chronodrive_profile` ; `page.goto(https://www.chronodrive.com/)` ; pause connexion, cookies (manuel) et choix du mode de service (Drive / Livraison) |
+| Courses | 2e clic validé → `signal_resume` ; `page.goto(url -P{id})` puis clics `button.cart-stepper-add` × `nb_paquets` |
+| Quantité | Lecture `.cart-stepper-output` dans `.product-details .product-actions-info .cart-stepper` |
+| Sans URL | Produit reporté dans `produits_a_valider` sans bloquer la boucle |
+| Apprentissage | Bip macOS ; utilisateur ouvre la fiche ou colle l'URL ; capture `page.url` si suffixe `-P{id}` → `drive_mapping.json` sous clé `chronodrive` |
+| Fin | « terminé » saisi dans `#search-input` (sans Entrée) ; navigateur laissé ouvert |
+
+Format URL produit : `https://www.chronodrive.com/{slug}-P{id}` (ex. `…-P481866`). Détection fiche : `is_chronodrive_product_fiche()` (`chronodrive.com` + `-P` + chiffres, hors pages magasin/recherche).
+
+Pas de repli `#plus` (spécifique Leclerc). Logs préfixés `[ChronodriveBot]`.
+
+Magasin de référence : **Portet-sur-Garonne** (`drive-magasin-1061`) — le profil persistant mémorise le contexte utilisateur (adresse, mode).
 
 ---
 
@@ -1243,6 +1271,8 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── drive_pdf_service.py   # WeasyPrint → GED Perso
 │   │   ├── drive_mapping_service.py
 │   │   ├── leclerc_driver.py      # robot Playwright Leclerc Drive
+│   │   ├── chronodrive_driver.py  # robot Playwright Chronodrive (Portet)
+│   │   ├── drive_driver_factory.py
 │   │   ├── gemini_client.py       # Google Gemini (google-genai)
 │   │   ├── openrouter_client.py   # OpenRouter / Qwen VL (mode Éco)
 │   │   ├── ollama_client.py       # fallback local
@@ -1261,7 +1291,7 @@ IA_Personal_Secretaire/          # dépôt git
 │   │   ├── manual_task_form.py  # création manuelle / routines
 │   │   ├── inbox_ui_safe.py     # garde-fous client NiceGUI
 │   │   ├── ged_view.py
-│   │   ├── drive_view.py        # Menu & Drive — menu, IA, robot Leclerc
+│   │   ├── drive_view.py        # Menu & Drive — menu, IA, robots multi-enseigne
 │   │   ├── settings_view.py
 │   │   ├── task_edit_dialog.py
 │   │   ├── task_badges.py       # icône récurrence + lien URL + notifications « Fait »

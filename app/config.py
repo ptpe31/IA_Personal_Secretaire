@@ -23,6 +23,7 @@ CREDENTIALS_PATH: Path = ROOT_PATH / ".credentials" / "google_calendar"
 DRIVE_MAPPING_PATH: Path = ROOT_PATH / "drive_mapping.json"
 CURRENT_MENU_PATH: Path = ROOT_PATH / "current_menu.json"
 LECLERC_PROFILE_PATH: Path = ROOT_PATH / ".leclerc_profile"
+CHRONODRIVE_PROFILE_PATH: Path = ROOT_PATH / ".chronodrive_profile"
 
 REQUIRED_DIRECTORIES: tuple[Path, ...] = (
     PRO_GED_PATH,

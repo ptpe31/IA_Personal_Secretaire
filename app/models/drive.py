@@ -14,7 +14,7 @@ from app.utils.dates import compute_menu_week_sunday
 
 RayonType = Literal["Épicerie", "Frais", "Fruits & Légumes", "Bébé", "Entretien"]
 UniteMesureType = Literal["g", "kg", "ml", "L", "u"]
-DrivePlatformId = Literal["leclerc", "auchan", "carrefour"]
+DrivePlatformId = Literal["leclerc", "chronodrive"]
 PlanningJourType = Literal[
     "Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"
 ]
@@ -28,15 +28,10 @@ DRIVE_PLATFORMS: dict[DrivePlatformId, dict[str, Any]] = {
         "robot_label": "LANCER LE ROBOT LECLERC DRIVE",
         "available": True,
     },
-    "auchan": {
-        "label": "Auchan Drive (Bientôt)",
-        "robot_label": "LANCER LE ROBOT AUCHAN DRIVE",
-        "available": False,
-    },
-    "carrefour": {
-        "label": "Carrefour Drive (Bientôt)",
-        "robot_label": "LANCER LE ROBOT CARREFOUR DRIVE",
-        "available": False,
+    "chronodrive": {
+        "label": "Chronodrive (Portet)",
+        "robot_label": "LANCER LE ROBOT CHRONODRIVE PORTET",
+        "available": True,
     },
 }
 
@@ -374,7 +369,7 @@ def migrate_regime_creneaux_cibles(
     *,
     premier_jour: str = PREMIER_JOUR_DEFAUT,
 ) -> list[str]:
-    """Migration : anciens jours (« Lundi ») → créneaux midi+soir."""
+    """Migration : anciens jours (« Lundi ») → créneaux midi/soir."""
     if not raw:
         return []
     meal_slots = set(ordered_meal_slots(premier_jour))
