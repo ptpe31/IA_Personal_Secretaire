@@ -51,6 +51,7 @@ from app.services.drive_mapping_service import (
 from app.services.drive_pdf_service import render_planning_html, save_planning_pdf
 from app.services.drive_ui_state import (
     load_drive_ui_state,
+    migrate_row_states_by_platform,
     parse_saved_analysis,
     save_drive_ui_state,
 )
@@ -127,6 +128,7 @@ def create_drive_view():
         "awaiting_login": False,
         "learning_active": False,
         "platform": saved_platform,
+        "row_states_by_platform": migrate_row_states_by_platform(saved_ui),
         "menu_meta": dict(saved_ui.get("menu_meta") or {}),
         "save_debounce_task": None,
         "meal_checkboxes": {},
@@ -483,14 +485,7 @@ def create_drive_view():
         _schedule_save()
 
     def _build_save_payload() -> dict[str, Any]:
-        row_states: dict[str, Any] = {}
-        for row_id, row_data in state.get("row_data", {}).items():
-            row_states[row_id] = {
-                "actif": bool(row_data.get("actif", True)),
-                "contenance": float(row_data.get("contenance", 0)),
-                "unite": str(row_data.get("unite", "")),
-                "url": str(row_data.get("url", "")),
-            }
+        _persist_row_states_to_platform()
         payload: dict[str, Any] = {
             "premier_jour_semaine": _premier_jour(),
             "convives_enfants": int(convives_enfants_input.value or 4),
@@ -507,7 +502,7 @@ def create_drive_view():
             "commentaires_text": commentaires_input.value or "",
             "platform": _platform(),
             "menu_meta": dict(state.get("menu_meta") or {}),
-            "row_states": row_states,
+            "row_states_by_platform": dict(state.get("row_states_by_platform") or {}),
         }
         result: DriveMenuAnalysisResult | None = state.get("result")
         if result is not None:
@@ -547,6 +542,38 @@ def create_drive_view():
 
     def _platform() -> DrivePlatformId:
         return state.get("platform", DEFAULT_DRIVE_PLATFORM)
+
+    def _url_matches_platform(url: str, platform: DrivePlatformId | None = None) -> bool:
+        cleaned = (url or "").strip().lower()
+        if not cleaned:
+            return True
+        platform = platform or _platform()
+        if platform == "leclerc":
+            return "leclercdrive" in cleaned
+        if platform == "chronodrive":
+            return "chronodrive.com" in cleaned
+        return True
+
+    def _saved_rows_for_platform(platform: DrivePlatformId | None = None) -> dict[str, Any]:
+        platform = platform or _platform()
+        rows = state.get("row_states_by_platform", {}).get(platform, {})
+        return dict(rows) if isinstance(rows, dict) else {}
+
+    def _persist_row_states_to_platform(platform: DrivePlatformId | None = None) -> None:
+        platform = platform or _platform()
+        row_states: dict[str, Any] = {}
+        for row_id, row_data in state.get("row_data", {}).items():
+            url = str(row_data.get("url") or "").strip()
+            if url and not _url_matches_platform(url, platform):
+                url = ""
+            row_states[row_id] = {
+                "actif": bool(row_data.get("actif", True)),
+                "contenance": float(row_data.get("contenance", 0)),
+                "unite": str(row_data.get("unite", "")),
+                "url": url,
+            }
+        by_platform = state.setdefault("row_states_by_platform", {})
+        by_platform[platform] = row_states
 
     def _store_mapping(mot_cle: str) -> dict[str, Any]:
         return dict(get_store_mapping(mot_cle, _platform()) or {})
@@ -592,9 +619,12 @@ def create_drive_view():
     ) -> dict[str, Any]:
         row_id = _row_key(course)
         mapping = _store_mapping(course.mot_cle)
-        url = mapping.get("product_url", "")
+        url = str(mapping.get("product_url") or "")
+        platform = _platform()
         if saved_row:
-            url = str(saved_row.get("url") or url)
+            saved_url = str(saved_row.get("url") or "").strip()
+            if saved_url and _url_matches_platform(saved_url, platform):
+                url = saved_url
             contenance = float(saved_row.get("contenance", 0))
             unite = str(saved_row.get("unite") or mapping.get("unite_paquet") or "")
             if actif is None:
@@ -650,9 +680,9 @@ def create_drive_view():
             )
             for course in section_items:
                 row_id = _row_key(course)
-                previous = state["row_data"].get(row_id)
-                actif = previous.get("actif") if previous is not None else None
-                rows.append(_build_table_row(course, actif=actif))
+                saved_row = _saved_rows_for_platform().get(row_id)
+                actif = saved_row.get("actif") if saved_row else None
+                rows.append(_build_table_row(course, actif=actif, saved_row=saved_row))
         table.rows = rows
         table.update()
         _schedule_save()
@@ -693,6 +723,8 @@ def create_drive_view():
             row_data["contenance"] = _parse_contenance(row.get("contenance"))
             row_data["unite"] = str(row.get("unite") or "").strip()
             raw_url = str(row.get("url") or "").strip()
+            if raw_url and not _url_matches_platform(raw_url):
+                raw_url = ""
             normalized = normalize_product_url(raw_url) if raw_url else ""
             row_data["url"] = normalized or raw_url
             _sync_table_fields_inplace(
@@ -1020,7 +1052,10 @@ def create_drive_view():
         )
         table.on("driveRowUpdate", _on_drive_row_update)
 
-    def _on_platform_change(event) -> None:
+    async def _on_platform_change(event) -> None:
+        await _flush_table_to_state()
+        old_platform = _platform()
+        _persist_row_states_to_platform(old_platform)
         label = event.value if hasattr(event, "value") else event
         platform = platform_id_from_label(str(label))
         cfg = DRIVE_PLATFORMS[platform]
@@ -1104,7 +1139,7 @@ def create_drive_view():
                         platform_select.on("update:model-value", _on_platform_change)
                         state["platform_select"] = platform_select
 
-                    saved_rows = restore_rows or {}
+                    saved_rows = restore_rows if restore_rows is not None else _saved_rows_for_platform(platform)
                     rows: list[dict[str, Any]] = []
                     for rayon in RAYON_ORDER:
                         section_items = [c for c in result.liste_courses if c.rayon == rayon]
@@ -1376,6 +1411,7 @@ def create_drive_view():
         state["row_data"] = {}
         state["table"] = None
         state["platform_select"] = None
+        state["row_states_by_platform"] = {}
         state["platform"] = DEFAULT_DRIVE_PLATFORM
         state["menu_meta"] = {}
         results_container.clear()
@@ -1423,7 +1459,7 @@ def create_drive_view():
     if saved_result is not None:
         show_results(
             saved_result,
-            restore_rows=dict(saved_ui.get("row_states") or {}),
+            restore_rows=_saved_rows_for_platform(state.get("platform", DEFAULT_DRIVE_PLATFORM)),
             initial_platform=state.get("platform", DEFAULT_DRIVE_PLATFORM),
         )
 

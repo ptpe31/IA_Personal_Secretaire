@@ -7,9 +7,24 @@ import logging
 from typing import Any
 
 from app.config import CURRENT_MENU_PATH
-from app.models.drive import DriveMenuAnalysisResult
+from app.models.drive import DEFAULT_DRIVE_PLATFORM, DRIVE_PLATFORMS, DriveMenuAnalysisResult
 
 logger = logging.getLogger(__name__)
+
+
+def migrate_row_states_by_platform(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """États de lignes du tableau courses, indexés par enseigne (rétrocompat. row_states)."""
+    by_platform = data.get("row_states_by_platform")
+    if isinstance(by_platform, dict) and by_platform:
+        return {
+            platform: dict(rows)
+            for platform, rows in by_platform.items()
+            if platform in DRIVE_PLATFORMS and isinstance(rows, dict)
+        }
+    legacy = data.get("row_states")
+    if isinstance(legacy, dict) and legacy:
+        return {DEFAULT_DRIVE_PLATFORM: dict(legacy)}
+    return {}
 
 
 def load_drive_ui_state() -> dict[str, Any] | None:

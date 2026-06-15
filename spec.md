@@ -877,7 +877,7 @@ Onglet **Menu & Drive** : saisie du menu hebdomadaire, génération IA du planni
 | `leclerc` | Leclerc Drive | `LANCER LE ROBOT LECLERC DRIVE` |
 | `chronodrive` | Chronodrive (Portet) | `LANCER LE ROBOT CHRONODRIVE PORTET` |
 
-Une seule plateforme active à la fois (V1). Le mapping `drive_mapping.json` est **par enseigne** : même mot-clé, URLs et contenances distinctes selon la plateforme sélectionnée. Évolution future possible : cases à cocher multi-drive pour remplir plusieurs paniers en parallèle (comparaison manuelle des totaux).
+Une seule plateforme active à la fois (V1). Le mapping `drive_mapping.json` est **par enseigne** : même mot-clé, URLs et contenances distinctes selon la plateforme sélectionnée. L'état éditable du tableau courses (`row_states_by_platform` dans `current_menu.json`) est lui aussi **scopé par enseigne** : changer de plateforme recharge les URLs / contenances / cases cochées de l'enseigne cible (mapping mémorisé + overrides session). Les URLs d'une autre enseigne ne sont jamais affichées ni persistées (filtre domaine : `leclercdrive` vs `chronodrive.com`). Migration automatique de l'ancien champ plat `row_states` → clé `leclerc`. Évolution future possible : cases à cocher multi-drive pour remplir plusieurs paniers en parallèle (comparaison manuelle des totaux).
 
 ### 8.1 Saisie
 
@@ -921,7 +921,7 @@ Une seule plateforme active à la fois (V1). Le mapping `drive_mapping.json` est
 
 **Génération consolidée** : un seul appel IA (`analyze_drive_menu`) produit `planning_repas` (enfants) + `planning_regime` (hôte) + `liste_courses`. Miroir post-génération dans les templates.
 
-**Persistance** : `~/Trankil-v2/current_menu.json` — modes, consignes, `enfants_creneaux_cibles`, `regime_creneaux_cibles`, templates, résultats. Migration automatique des anciens `regime_jours_cibles` (7 jours) vers créneaux midi/soir.
+**Persistance** : `~/Trankil-v2/current_menu.json` — modes, consignes, `enfants_creneaux_cibles`, `regime_creneaux_cibles`, templates, résultats, `platform` (enseigne active), `row_states_by_platform` (état du tableau courses par enseigne : URL, contenance, unité, actif). Migration automatique des anciens `regime_jours_cibles` (7 jours) vers créneaux midi/soir ; des anciens `row_states` (plat) vers `row_states_by_platform.leclerc`.
 
 Lignes vides ou égales au préfixe seul sont ignorées avant envoi IA (`build_drive_menu_input`).
 
@@ -957,9 +957,11 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 | Cont. 1 pqt | Saisie locale (contenance du paquet) — pas de sync serveur à chaque frappe |
 | Unité | `q-select` (g / kg / ml / L / u) — vide par défaut si non mémorisé |
 | Commande | Affiche `—` pendant l'édition ; calcul uniquement à la validation (§ 8.3.2) |
-| Lien direct | URL fiche produit — saisie locale ; bordure orange si vide |
+| Lien direct | URL fiche produit **de l'enseigne active** — saisie locale ; bordure orange si vide ; vide au changement de plateforme si aucun mapping / override pour cette enseigne |
 
-**Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Seule la checkbox « actif » remonte immédiatement vers Python. Avant toute sauvegarde UI (`row_states`), un **flush** client → serveur synchronise toutes les lignes.
+**Changement de plateforme** : flush du tableau → sauvegarde de l'état courant sous la clé de l'enseigne sortante → rechargement depuis `drive_mapping.json` + `row_states_by_platform[enseigne]` pour l'enseigne entrante.
+
+**Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Seule la checkbox « actif » remonte immédiatement vers Python. Avant toute sauvegarde UI (`row_states_by_platform`), un **flush** client → serveur synchronise toutes les lignes.
 
 #### 8.3.2 Validation modale et bouton unique
 
@@ -1009,7 +1011,7 @@ Mapping `drive_mapping.json` : écriture **au commit** (validation Oui), plus à
 
 Modèle robot : `DriveShoppingItem` (`CourseItem` + `product_url` optionnelle).
 
-Mapping : `drive_mapping.json` : `{ mot_cle: { product_id, product_url, product_name, contenance_paquet, unite_paquet } }` — URLs stockées sans `#plus` ; écriture au **commit validation** (§ 8.3.2).
+Mapping : `drive_mapping.json` : `{ mot_cle: { leclerc: { product_id, product_url, … }, chronodrive: { … } } }` (entrées plates legacy migrées sous `leclerc`) — URLs stockées sans `#plus` ; écriture au **commit validation** (§ 8.3.2).
 
 Simulation humaine : pauses 1,5–3,0 s après chaque `#plus`. Logs préfixés `[LeclercBot]`.
 
