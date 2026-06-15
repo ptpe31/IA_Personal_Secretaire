@@ -562,7 +562,7 @@ def create_drive_view():
         except Exception:
             logger.exception("%s échec sauvegarde session", _LOG_TABLE)
 
-    def _schedule_save() -> None:
+    def _schedule_save(*, flush: bool = True) -> None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -577,9 +577,13 @@ def create_drive_view():
         async def _debounced() -> None:
             try:
                 await asyncio.sleep(_SAVE_DEBOUNCE_S)
-                flushed = await _flush_table_to_state()
-                if flushed:
-                    _log_table_fill_stats("après flush autosave")
+                if flush:
+                    flushed = await _flush_table_to_state()
+                    if flushed:
+                        _log_table_fill_stats("après flush autosave")
+                else:
+                    _persist_row_states_to_platform()
+                    logger.debug("%s sauvegarde session sans flush client (état Python)", _LOG_TABLE)
                 await _save_current_ui_state()
             except asyncio.CancelledError:
                 logger.debug("%s sauvegarde annulée (nouvelle édition)", _LOG_TABLE)
@@ -587,7 +591,12 @@ def create_drive_view():
                 logger.exception("%s échec autosave", _LOG_TABLE)
 
         state["save_debounce_task"] = loop.create_task(_debounced())
-        logger.debug("%s autosave planifiée dans %.0fms", _LOG_TABLE, _SAVE_DEBOUNCE_S * 1000)
+        logger.debug(
+            "%s autosave planifiée dans %.0fms (flush=%s)",
+            _LOG_TABLE,
+            _SAVE_DEBOUNCE_S * 1000,
+            flush,
+        )
 
     def _wire_autosave(element, *, event: str = "update:model-value") -> None:
         element.on(event, lambda _: _schedule_save())
@@ -1005,19 +1014,24 @@ def create_drive_view():
             logger.debug("%s flush ignoré — pas de tableau", _LOG_TABLE)
             return False
         rows = await _read_client_table_rows(table)
+        if rows is not None and not rows:
+            await asyncio.sleep(0.5)
+            rows = await _read_client_table_rows(table)
         if rows is None:
             return False
         if not rows:
-            logger.warning(
-                "%s flush | 0 ligne lue — qRef.rows vide (état Python inchangé)",
+            logger.debug(
+                "%s flush ignoré — tableau client pas encore monté (état Python conservé)",
                 _LOG_TABLE,
             )
             return False
         updated = 0
         rejected_urls = 0
+        data_row_count = 0
         for row in rows:
             if not isinstance(row, dict) or row.get("_section"):
                 continue
+            data_row_count += 1
             row_id = str(row.get("id") or "")
             if not row_id or row_id.startswith("__section__"):
                 continue
@@ -1052,13 +1066,20 @@ def create_drive_view():
                 url=row_data["url"],
             )
             _refresh_row_commande(row_id)
-        logger.info(
-            "%s flush | %d ligne(s) lues | %d modifiée(s) | %d URL rejetée(s)",
-            _LOG_TABLE,
-            len(rows),
-            updated,
-            rejected_urls,
-        )
+        if updated:
+            logger.info(
+                "%s flush | %d ligne(s) | %d modifiée(s) | %d URL rejetée(s)",
+                _LOG_TABLE,
+                data_row_count,
+                updated,
+                rejected_urls,
+            )
+        else:
+            logger.debug(
+                "%s flush | %d ligne(s) — déjà synchronisé (blur ou état identique)",
+                _LOG_TABLE,
+                data_row_count,
+            )
         return True
 
     def _sync_table_fields_inplace(row_id: str, **fields: Any) -> None:
@@ -1574,7 +1595,7 @@ def create_drive_view():
                     _log_table_fill_stats("show_results initial")
                     _log_table_snapshot("show_results initial", platform=platform)
 
-        _schedule_save()
+        _schedule_save(flush=False)
 
     async def generate() -> None:
         payload = build_drive_menu_input(

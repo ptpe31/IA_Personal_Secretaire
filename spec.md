@@ -165,7 +165,7 @@ Prérequis système : `brew install rclone gnupg` · remote rclone `gdrive` conf
 
 **Port d'écoute** : par défaut **8080** (`APP_PORT` dans `app/config.py`). Au démarrage, `resolve_listen_port()` teste la disponibilité : si 8080 est occupé, l'app bascule sur le premier port libre suivant (8081…8099, jusqu'à 20 tentatives). NiceGUI ouvre le navigateur sur le port effectivement utilisé ; un avertissement est loggé si le port diffère du défaut. Surcharge explicite : `TRANKIL_PORT` ou `APP_PORT` — erreur si le port demandé est déjà pris.
 
-Le script `start.command` active le venv, purge les `__pycache__`, tente de libérer le port 8080 si une instance IA-Secretaire y tourne déjà, lance l'app (`python -B main.py`). Variables optionnelles : `TRANKIL_LOG_LEVEL=DEBUG`, `TRANKIL_PORT=9000`.
+Le script `start.command` active le venv, purge les `__pycache__`, arrête toute instance `python -B main.py` de ce dépôt (évite les doubles serveurs 8080/8081/8082), libère le port 8080 si besoin, puis lance l'app. Variables optionnelles : `TRANKIL_LOG_LEVEL=DEBUG`, `TRANKIL_PORT=9000`.
 
 #### 2.4.1 Service LaunchAgent (macOS)
 
@@ -961,7 +961,7 @@ Après génération IA, colonne droite : tableau haute densité par rayon :
 
 **Changement de plateforme** : flush du tableau → sauvegarde de l'état courant sous la clé de l'enseigne sortante → rechargement depuis `drive_mapping.json` + `row_states_by_platform[enseigne]` pour l'enseigne entrante.
 
-**Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Seule la checkbox « actif » remonte immédiatement vers Python. Avant toute sauvegarde UI (`row_states_by_platform`), un **flush** client → serveur synchronise toutes les lignes.
+**Édition** : contenance, unité et URL sont modifiées côté Vue sans `table.update()` à chaque caractère (évite la perte de focus). Sync Python au **blur** (URL, contenance) ou à la sélection (unité) ; checkbox « actif » immédiate. Avant sauvegarde après édition, un **flush** client → serveur (`q-table.rows`) complète l'état ; au chargement initial (`show_results`), sauvegarde sans flush (table Vue pas encore montée).
 
 #### 8.3.2 Validation modale et bouton unique
 

@@ -14,9 +14,16 @@ else
   source .venv/bin/activate
 fi
 
-# Arrête une instance déjà lancée sur le port 8080
+# Arrête toutes les instances IA-Secretaire de ce dépôt (évite 8080 + 8081 + 8082…)
+MAIN_PATTERN="${SCRIPT_DIR}/.venv/bin/python -B main.py"
+if pgrep -f "${MAIN_PATTERN}" >/dev/null 2>&1; then
+  echo "Arrêt des instances IA-Secretaire existantes…"
+  pkill -f "${MAIN_PATTERN}" 2>/dev/null || true
+  sleep 1
+fi
+# Libère aussi le port par défaut au cas où un autre processus l'occupe
 if lsof -ti :8080 >/dev/null 2>&1; then
-  echo "Arrêt de l'instance IA-Secretaire existante (port 8080)…"
+  echo "Libération du port 8080…"
   lsof -ti :8080 | xargs kill -9 2>/dev/null || true
   sleep 1
 fi
