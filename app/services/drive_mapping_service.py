@@ -139,8 +139,24 @@ def get_store_mapping(
 ) -> dict[str, Any] | None:
     stores = get_product_entry(mot_cle)
     if not stores:
+        logger.debug("[DriveMapping] %r @ %s → aucune entrée", mot_cle, platform)
         return None
-    return stores.get(platform)
+    entry = stores.get(platform)
+    if entry:
+        logger.debug(
+            "[DriveMapping] %r @ %s → url=%s",
+            mot_cle,
+            platform,
+            (str(entry.get("product_url") or "")[:80] or "(vide)"),
+        )
+    else:
+        logger.debug(
+            "[DriveMapping] %r @ %s → absent (disponible: %s)",
+            mot_cle,
+            platform,
+            list(stores.keys()),
+        )
+    return entry
 
 
 def get_mapping(mot_cle: str) -> dict[str, Any] | None:

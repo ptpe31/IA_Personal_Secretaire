@@ -62,6 +62,50 @@ from app.ui.tab_registry import register_tab_refresh
 logger = logging.getLogger(__name__)
 
 _COMMANDE_PLACEHOLDER = "—"
+_LOG_PREFIX = "[DrivePlatform]"
+
+
+def platform_label_from_event(event: Any) -> str:
+    """Extrait le libellé sélectionné depuis un événement NiceGUI (select)."""
+    if event is None:
+        return ""
+    value = getattr(event, "value", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    args = getattr(event, "args", None)
+    if isinstance(args, dict):
+        label = args.get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+        idx = args.get("value")
+        if isinstance(idx, int) and 0 <= idx < len(DRIVE_PLATFORM_SELECT_OPTIONS):
+            return DRIVE_PLATFORM_SELECT_OPTIONS[idx]
+    if isinstance(args, str) and args.strip():
+        return args.strip()
+    if isinstance(args, int) and 0 <= args < len(DRIVE_PLATFORM_SELECT_OPTIONS):
+        return DRIVE_PLATFORM_SELECT_OPTIONS[args]
+    sender = getattr(event, "sender", None)
+    if sender is not None:
+        sender_value = getattr(sender, "value", None)
+        if isinstance(sender_value, str) and sender_value.strip():
+            return sender_value.strip()
+    if value is not None and str(value) not in ("", "None"):
+        return str(value)
+    if isinstance(event, str) and event.strip():
+        return event.strip()
+    return ""
+
+
+def url_platform_hint(url: str) -> str:
+    """Indique l'enseigne détectée dans une URL (diagnostic)."""
+    lower = (url or "").strip().lower()
+    if not lower:
+        return "vide"
+    if "chronodrive.com" in lower:
+        return "chronodrive"
+    if "leclercdrive" in lower:
+        return "leclerc"
+    return "autre"
 
 _VALIDATION_TABLE_COLUMNS = [
     {"name": "article", "label": "Article", "field": "article", "align": "left"},
@@ -574,6 +618,55 @@ def create_drive_view():
             }
         by_platform = state.setdefault("row_states_by_platform", {})
         by_platform[platform] = row_states
+        logger.info(
+            "%s persist row_states → %s (%d ligne(s))",
+            _LOG_PREFIX,
+            platform,
+            len(row_states),
+        )
+
+    def _log_row_states_by_platform(context: str) -> None:
+        by_platform = state.get("row_states_by_platform") or {}
+        for platform_id in DRIVE_PLATFORMS:
+            rows = by_platform.get(platform_id) or {}
+            with_url = sum(1 for r in rows.values() if str(r.get("url") or "").strip())
+            logger.info(
+                "%s %s | saved[%s] : %d ligne(s), %d URL(s)",
+                _LOG_PREFIX,
+                context,
+                platform_id,
+                len(rows),
+                with_url,
+            )
+
+    def _log_table_snapshot(context: str, *, platform: DrivePlatformId | None = None) -> None:
+        platform = platform or _platform()
+        table = state.get("table")
+        row_data = state.get("row_data") or {}
+        samples: list[str] = []
+        mismatch = 0
+        for row_id, data in list(row_data.items())[:8]:
+            course: CourseItem = data["course"]
+            url = str(data.get("url") or "")
+            hint = url_platform_hint(url)
+            if url and hint not in ("vide", platform):
+                mismatch += 1
+            mapping_url = str((_store_mapping(course.mot_cle) or {}).get("product_url") or "")
+            samples.append(
+                f"{course.mot_cle!r}: url={url[:60]!r} ({hint}) mapping={mapping_url[:60]!r}"
+            )
+        table_rows = len(getattr(table, "rows", []) or []) if table else 0
+        logger.info(
+            "%s %s | platform=%s | row_data=%d | table.rows=%d | mismatch=%d",
+            _LOG_PREFIX,
+            context,
+            platform,
+            len(row_data),
+            table_rows,
+            mismatch,
+        )
+        for line in samples:
+            logger.info("%s   · %s", _LOG_PREFIX, line)
 
     def _store_mapping(mot_cle: str) -> dict[str, Any]:
         return dict(get_store_mapping(mot_cle, _platform()) or {})
@@ -621,10 +714,14 @@ def create_drive_view():
         mapping = _store_mapping(course.mot_cle)
         url = str(mapping.get("product_url") or "")
         platform = _platform()
+        url_source = "mapping" if url else "vide"
         if saved_row:
             saved_url = str(saved_row.get("url") or "").strip()
             if saved_url and _url_matches_platform(saved_url, platform):
                 url = saved_url
+                url_source = "saved_row"
+            elif saved_url:
+                url_source = f"saved_row_rejetée({url_platform_hint(saved_url)})"
             contenance = float(saved_row.get("contenance", 0))
             unite = str(saved_row.get("unite") or mapping.get("unite_paquet") or "")
             if actif is None:
@@ -635,6 +732,14 @@ def create_drive_view():
             contenance, unite = _resolve_row_packaging(
                 course, mapping, url=url, row_contenance=0.0, row_unite=""
             )
+        logger.debug(
+            "%s build_row %s @ %s | source=%s | url=%s",
+            _LOG_PREFIX,
+            course.mot_cle,
+            platform,
+            url_source,
+            (url[:80] + "…") if len(url) > 80 else url or "(vide)",
+        )
         state["row_data"][row_id] = {
             "course": course,
             "actif": actif,
@@ -652,6 +757,7 @@ def create_drive_view():
             "commande": _COMMANDE_PLACEHOLDER,
             "url": url,
             "rayon": course.rayon,
+            "_platform": platform,
         }
 
     def _refresh_table_rows() -> None:
@@ -685,15 +791,14 @@ def create_drive_view():
                 rows.append(_build_table_row(course, actif=actif, saved_row=saved_row))
         table.rows = rows
         table.update()
+        _log_table_snapshot("après refresh_table_rows")
         _schedule_save()
 
     async def _flush_table_to_state() -> None:
         table = state.get("table")
         if table is None:
             return
-        try:
-            rows = await ui.run_javascript(
-                f"""
+        js = f"""
                 const el = getElement({table.id});
                 if (!el || !el.rows) return [];
                 return el.rows
@@ -705,8 +810,9 @@ def create_drive_view():
                         unite: r.unite != null ? String(r.unite) : '',
                         url: r.url != null ? String(r.url) : '',
                     }}));
-                """,
-            )
+                """
+        try:
+            rows = await table.client.run_javascript(js)
         except Exception:
             logger.exception("Flush tableau Drive échoué")
             return
@@ -1043,6 +1149,7 @@ def create_drive_view():
             r"""
             <q-td :props="props" class="q-pa-xs">
                 <q-input v-if="!props.row._section" dense outlined placeholder="URL fiche produit…"
+                    :key="props.row.id + '@' + (props.row._platform || '')"
                     style="font-size:12px;min-width:140px"
                     :class="!props.row.url ? 'trankil-drive-url-missing' : ''"
                     :model-value="props.row.url"
@@ -1053,18 +1160,37 @@ def create_drive_view():
         table.on("driveRowUpdate", _on_drive_row_update)
 
     async def _on_platform_change(event) -> None:
+        logger.info("%s ─── changement magasin demandé ─── event=%r", _LOG_PREFIX, event)
         await _flush_table_to_state()
         old_platform = _platform()
+        _log_table_snapshot("avant switch (après flush)", platform=old_platform)
         _persist_row_states_to_platform(old_platform)
-        label = event.value if hasattr(event, "value") else event
-        platform = platform_id_from_label(str(label))
+        label = platform_label_from_event(event)
+        platform = platform_id_from_label(label)
+        logger.info(
+            "%s parsé label=%r → platform_id=%r (était %r)",
+            _LOG_PREFIX,
+            label,
+            platform,
+            old_platform,
+        )
+        if platform == old_platform:
+            logger.warning(
+                "%s plateforme inchangée après sélection — label=%r event.args=%r event.value=%r",
+                _LOG_PREFIX,
+                label,
+                getattr(event, "args", None),
+                getattr(event, "value", None),
+            )
         cfg = DRIVE_PLATFORMS[platform]
         if not cfg.get("available"):
             ui.notify(f"{cfg['label']} — bientôt disponible.", type="warning")
             return
         state["platform"] = platform
+        _log_row_states_by_platform("row_states_by_platform avant refresh")
         _update_robot_labels()
         _refresh_table_rows()
+        _log_table_snapshot("après switch complet")
         _schedule_save()
 
     def show_results(
@@ -1136,7 +1262,7 @@ def create_drive_view():
                             DRIVE_PLATFORM_SELECT_OPTIONS,
                             value=DRIVE_PLATFORMS[platform]["label"],
                         ).props("outlined dense options-dense").classes("col-grow")
-                        platform_select.on("update:model-value", _on_platform_change)
+                        platform_select.on_value_change(_on_platform_change)
                         state["platform_select"] = platform_select
 
                     saved_rows = restore_rows if restore_rows is not None else _saved_rows_for_platform(platform)
@@ -1178,6 +1304,7 @@ def create_drive_view():
                     )
                     _configure_drive_table(table)
                     state["table"] = table
+                    _log_table_snapshot("show_results initial", platform=platform)
 
         _schedule_save()
 
