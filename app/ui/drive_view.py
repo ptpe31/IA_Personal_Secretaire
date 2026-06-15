@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 
 _COMMANDE_PLACEHOLDER = "—"
 _LOG_PREFIX = "[DrivePlatform]"
+_LOG_TABLE = "[DriveTable]"
+_SAVE_DEBOUNCE_S = 0.35
 
 
 def platform_label_from_event(event: Any) -> str:
@@ -554,27 +556,38 @@ def create_drive_view():
         return payload
 
     async def _save_current_ui_state() -> None:
-        await asyncio.to_thread(save_drive_ui_state, _build_save_payload())
+        try:
+            await asyncio.to_thread(save_drive_ui_state, _build_save_payload())
+            logger.info("%s session sauvegardée (current_menu.json)", _LOG_TABLE)
+        except Exception:
+            logger.exception("%s échec sauvegarde session", _LOG_TABLE)
 
     def _schedule_save() -> None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            logger.debug("%s sauvegarde ignorée — pas de boucle asyncio", _LOG_TABLE)
             return
 
         task = state.get("save_debounce_task")
         if task is not None and not task.done():
             task.cancel()
+            logger.debug("%s sauvegarde replanifiée (debounce %.0fms)", _LOG_TABLE, _SAVE_DEBOUNCE_S * 1000)
 
         async def _debounced() -> None:
             try:
-                await asyncio.sleep(0.35)
-                await _flush_table_to_state()
+                await asyncio.sleep(_SAVE_DEBOUNCE_S)
+                flushed = await _flush_table_to_state()
+                if flushed:
+                    _log_table_fill_stats("après flush autosave")
                 await _save_current_ui_state()
             except asyncio.CancelledError:
-                pass
+                logger.debug("%s sauvegarde annulée (nouvelle édition)", _LOG_TABLE)
+            except Exception:
+                logger.exception("%s échec autosave", _LOG_TABLE)
 
         state["save_debounce_task"] = loop.create_task(_debounced())
+        logger.debug("%s autosave planifiée dans %.0fms", _LOG_TABLE, _SAVE_DEBOUNCE_S * 1000)
 
     def _wire_autosave(element, *, event: str = "update:model-value") -> None:
         element.on(event, lambda _: _schedule_save())
@@ -668,6 +681,161 @@ def create_drive_view():
         for line in samples:
             logger.info("%s   · %s", _LOG_PREFIX, line)
 
+    def _log_table_fill_stats(context: str) -> None:
+        row_data = state.get("row_data") or {}
+        platform = _platform()
+        total = len(row_data)
+        with_url = 0
+        with_packaging = 0
+        commandable = 0
+        incomplete: list[str] = []
+        for row_id, data in row_data.items():
+            course: CourseItem = data["course"]
+            url = str(data.get("url") or "").strip()
+            contenance = float(data.get("contenance", 0))
+            unite = str(data.get("unite") or "").strip()
+            if url:
+                with_url += 1
+            if contenance > 0 and unite:
+                with_packaging += 1
+            if _row_shopping_item(data) is not None:
+                commandable += 1
+            elif data.get("actif", True):
+                reason = _row_incomplete_reason(data)
+                if reason:
+                    incomplete.append(f"{course.mot_cle}: {reason}")
+        logger.info(
+            "%s %s @ %s | %d lignes | %d URL | %d conditionnées | %d commandables",
+            _LOG_TABLE,
+            context,
+            platform,
+            total,
+            with_url,
+            with_packaging,
+            commandable,
+        )
+        for hint in incomplete[:6]:
+            logger.info("%s   · incomplet : %s", _LOG_TABLE, hint)
+        if len(incomplete) > 6:
+            logger.info("%s   · … et %d autre(s)", _LOG_TABLE, len(incomplete) - 6)
+
+    def _row_incomplete_reason(row_data: dict[str, Any]) -> str:
+        if not row_data.get("actif", True):
+            return ""
+        course: CourseItem = row_data["course"]
+        raw_url = (row_data.get("url") or "").strip()
+        if not raw_url:
+            raw_url = str((_store_mapping(course.mot_cle) or {}).get("product_url") or "")
+        if not normalize_product_url(raw_url):
+            return "URL manquante"
+        contenance = float(row_data.get("contenance", 0))
+        unite = str(row_data.get("unite") or "").strip()
+        mapping = _store_mapping(course.mot_cle)
+        if contenance <= 0:
+            stored = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+            if stored:
+                contenance = float(stored)
+        if not unite:
+            unite = str(mapping.get("unite_paquet") or "").strip()
+        if contenance <= 0:
+            return "contenance manquante"
+        if not unite:
+            return "unité manquante"
+        nb = _calc_commande(course, contenance, unite, mapping)
+        if nb <= 0:
+            return "quantité incompatible"
+        return ""
+
+    def _refresh_row_commande(row_id: str) -> None:
+        row_data = state["row_data"].get(row_id)
+        if row_data is None:
+            return
+        course: CourseItem = row_data["course"]
+        mapping = _store_mapping(course.mot_cle)
+        contenance = float(row_data.get("contenance", 0))
+        unite = str(row_data.get("unite") or "").strip()
+        if contenance <= 0:
+            stored = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+            if stored:
+                contenance = float(stored)
+        if not unite:
+            unite = str(mapping.get("unite_paquet") or "").strip()
+        nb = _calc_commande(course, contenance, unite, mapping)
+        commande: int | str = nb if nb > 0 else _COMMANDE_PLACEHOLDER
+        _sync_table_fields_inplace(row_id, commande=commande)
+
+    def _apply_row_field_update(row_id: str, field: str, raw_value: Any) -> None:
+        row_data = state["row_data"].get(row_id)
+        if row_data is None:
+            logger.warning("%s ligne inconnue %r (champ %s)", _LOG_TABLE, row_id, field)
+            return
+        course: CourseItem = row_data["course"]
+        mapping = _store_mapping(course.mot_cle)
+
+        if field == "contenance":
+            contenance = _parse_contenance(raw_value)
+            row_data["contenance"] = contenance
+            _sync_table_fields_inplace(row_id, contenance=contenance)
+            logger.info(
+                "%s %r | contenance → %s",
+                _LOG_TABLE,
+                course.mot_cle,
+                contenance if contenance > 0 else "(vide)",
+            )
+        elif field == "unite":
+            unite = str(raw_value or "").strip()
+            row_data["unite"] = unite
+            _sync_table_fields_inplace(row_id, unite=unite)
+            logger.info("%s %r | unité → %r", _LOG_TABLE, course.mot_cle, unite or "—")
+        elif field == "url":
+            raw_url = str(raw_value or "").strip()
+            if raw_url and not _url_matches_platform(raw_url):
+                logger.warning(
+                    "%s %r | URL rejetée (enseigne %s) : %s",
+                    _LOG_TABLE,
+                    course.mot_cle,
+                    _platform(),
+                    raw_url[:80],
+                )
+                raw_url = ""
+            url = normalize_product_url(raw_url) if raw_url else ""
+            row_data["url"] = url
+            if url and float(row_data.get("contenance", 0)) <= 0:
+                stored = mapping.get("contenance_paquet") or mapping.get("quantite_paquet")
+                unite_map = str(mapping.get("unite_paquet") or "")
+                if stored:
+                    row_data["contenance"] = float(stored)
+                    row_data["unite"] = unite_map or row_data.get("unite", "")
+                    logger.info(
+                        "%s %r | conditionnement repris du mapping : %s %s",
+                        _LOG_TABLE,
+                        course.mot_cle,
+                        row_data["contenance"],
+                        row_data["unite"],
+                    )
+            if url:
+                row_data["actif"] = True
+            _sync_table_fields_inplace(
+                row_id,
+                url=url,
+                contenance=float(row_data.get("contenance", 0)),
+                unite=str(row_data.get("unite") or ""),
+                actif=bool(row_data.get("actif", True)),
+            )
+            logger.info(
+                "%s %r | URL → %s",
+                _LOG_TABLE,
+                course.mot_cle,
+                (url[:80] + "…") if len(url) > 80 else url or "(vide)",
+            )
+        else:
+            return
+
+        _refresh_row_commande(row_id)
+        nb = state["row_data"][row_id].get("commande", _COMMANDE_PLACEHOLDER)
+        if nb != _COMMANDE_PLACEHOLDER:
+            logger.debug("%s %r | commande prévisualisée : %s paquet(s)", _LOG_TABLE, course.mot_cle, nb)
+
     def _store_mapping(mot_cle: str) -> dict[str, Any]:
         return dict(get_store_mapping(mot_cle, _platform()) or {})
 
@@ -747,6 +915,12 @@ def create_drive_view():
             "unite": unite,
             "url": url,
         }
+        commande_val = (
+            _calc_commande(course, contenance, unite, mapping)
+            if contenance > 0 and str(unite or "").strip()
+            else 0
+        )
+        commande: int | str = commande_val if commande_val > 0 else _COMMANDE_PLACEHOLDER
         return {
             "id": row_id,
             "actif": actif,
@@ -754,7 +928,7 @@ def create_drive_view():
             "article": format_article_display(course),
             "contenance": contenance,
             "unite": unite,
-            "commande": _COMMANDE_PLACEHOLDER,
+            "commande": commande,
             "url": url,
             "rayon": course.rayon,
             "_platform": platform,
@@ -791,48 +965,85 @@ def create_drive_view():
                 rows.append(_build_table_row(course, actif=actif, saved_row=saved_row))
         table.rows = rows
         table.update()
+        _log_table_fill_stats("après refresh_table_rows")
         _log_table_snapshot("après refresh_table_rows")
         _schedule_save()
 
-    async def _flush_table_to_state() -> None:
-        table = state.get("table")
-        if table is None:
-            return
+    async def _read_client_table_rows(table) -> list[dict[str, Any]] | None:
+        """Lit les lignes du tableau côté client (mutations Vue incluses)."""
+        try:
+            raw = await table.get_computed_prop("rows", timeout=2.0)
+            if isinstance(raw, list):
+                return raw
+        except Exception:
+            logger.debug("%s get_computed_prop('rows') indisponible, repli JS", _LOG_TABLE, exc_info=True)
         js = f"""
-                const el = getElement({table.id});
-                if (!el || !el.rows) return [];
-                return el.rows
-                    .filter(r => r && !r._section)
-                    .map(r => ({{
-                        id: String(r.id),
-                        actif: !!r.actif,
-                        contenance: r.contenance,
-                        unite: r.unite != null ? String(r.unite) : '',
-                        url: r.url != null ? String(r.url) : '',
-                    }}));
-                """
+            const el = getElement({table.id});
+            const qt = el && el.$refs ? el.$refs.qRef : null;
+            const raw = (qt && Array.isArray(qt.rows)) ? qt.rows
+                : (el && Array.isArray(el.rows)) ? el.rows : [];
+            return raw
+                .filter(r => r && !r._section)
+                .map(r => ({{
+                    id: String(r.id),
+                    actif: !!r.actif,
+                    contenance: r.contenance,
+                    unite: r.unite != null ? String(r.unite) : '',
+                    url: r.url != null ? String(r.url) : '',
+                }}));
+        """
         try:
             rows = await table.client.run_javascript(js)
         except Exception:
-            logger.exception("Flush tableau Drive échoué")
-            return
-        if not isinstance(rows, list):
-            return
+            logger.exception("%s flush JS échoué", _LOG_TABLE)
+            return None
+        return rows if isinstance(rows, list) else None
+
+    async def _flush_table_to_state() -> bool:
+        table = state.get("table")
+        if table is None:
+            logger.debug("%s flush ignoré — pas de tableau", _LOG_TABLE)
+            return False
+        rows = await _read_client_table_rows(table)
+        if rows is None:
+            return False
+        if not rows:
+            logger.warning(
+                "%s flush | 0 ligne lue — qRef.rows vide (état Python inchangé)",
+                _LOG_TABLE,
+            )
+            return False
+        updated = 0
+        rejected_urls = 0
         for row in rows:
+            if not isinstance(row, dict) or row.get("_section"):
+                continue
             row_id = str(row.get("id") or "")
             if not row_id or row_id.startswith("__section__"):
                 continue
+            payload = row
             row_data = state["row_data"].get(row_id)
             if row_data is None:
+                logger.warning("%s flush — ligne JS inconnue côté Python : %s", _LOG_TABLE, row_id)
                 continue
-            row_data["actif"] = bool(row.get("actif", True))
-            row_data["contenance"] = _parse_contenance(row.get("contenance"))
-            row_data["unite"] = str(row.get("unite") or "").strip()
-            raw_url = str(row.get("url") or "").strip()
+            prev_url = str(row_data.get("url") or "")
+            prev_cont = float(row_data.get("contenance", 0))
+            prev_unite = str(row_data.get("unite") or "")
+            row_data["actif"] = bool(payload.get("actif", True))
+            row_data["contenance"] = _parse_contenance(payload.get("contenance"))
+            row_data["unite"] = str(payload.get("unite") or "").strip()
+            raw_url = str(payload.get("url") or "").strip()
             if raw_url and not _url_matches_platform(raw_url):
+                rejected_urls += 1
                 raw_url = ""
             normalized = normalize_product_url(raw_url) if raw_url else ""
             row_data["url"] = normalized or raw_url
+            if (
+                prev_url != row_data["url"]
+                or prev_cont != row_data["contenance"]
+                or prev_unite != row_data["unite"]
+            ):
+                updated += 1
             _sync_table_fields_inplace(
                 row_id,
                 actif=row_data["actif"],
@@ -840,6 +1051,15 @@ def create_drive_view():
                 unite=row_data["unite"],
                 url=row_data["url"],
             )
+            _refresh_row_commande(row_id)
+        logger.info(
+            "%s flush | %d ligne(s) lues | %d modifiée(s) | %d URL rejetée(s)",
+            _LOG_TABLE,
+            len(rows),
+            updated,
+            rejected_urls,
+        )
+        return True
 
     def _sync_table_fields_inplace(row_id: str, **fields: Any) -> None:
         table = state.get("table")
@@ -859,13 +1079,21 @@ def create_drive_view():
         row_id = args.get("id")
         field = args.get("field")
         value = args.get("value")
-        if not row_id or field != "actif" or row_id.startswith("__section__"):
+        if not row_id or row_id.startswith("__section__"):
             return
-        row_data = state["row_data"].get(row_id)
-        if row_data is None:
+        if field == "actif":
+            row_data = state["row_data"].get(row_id)
+            if row_data is None:
+                return
+            row_data["actif"] = bool(value)
+            _sync_table_fields_inplace(row_id, actif=row_data["actif"])
+            course: CourseItem = row_data["course"]
+            logger.info("%s %r | actif → %s", _LOG_TABLE, course.mot_cle, bool(value))
+            _refresh_row_commande(row_id)
+        elif field in ("contenance", "unite", "url"):
+            _apply_row_field_update(row_id, field, value)
+        else:
             return
-        row_data["actif"] = bool(value)
-        _sync_table_fields_inplace(row_id, actif=row_data["actif"])
         _schedule_save()
 
     def _row_shopping_item(row_data: dict[str, Any]) -> DriveShoppingItem | None:
@@ -944,8 +1172,21 @@ def create_drive_view():
             total_paquets=total_paquets,
         )
 
+    def _log_validation_report(report: DriveValidationReport, *, context: str) -> None:
+        logger.info(
+            "%s %s | actifs=%d | commandables=%d | ignorés=%d | total %d paquet(s)",
+            _LOG_TABLE,
+            context,
+            report.active_count,
+            report.orderable_count,
+            report.ignored_count,
+            report.total_paquets,
+        )
+
     def _persist_mappings_from_row_data() -> None:
         platform = _platform()
+        saved = 0
+        skipped = 0
         for row_data in state.get("row_data", {}).values():
             if not row_data.get("actif", True):
                 continue
@@ -953,10 +1194,12 @@ def create_drive_view():
             raw_url = (row_data.get("url") or "").strip()
             product_url = normalize_product_url(raw_url)
             if not product_url:
+                skipped += 1
                 continue
             contenance = float(row_data.get("contenance", 0))
             unite = str(row_data.get("unite") or "").strip()
             if contenance <= 0 or not unite:
+                skipped += 1
                 continue
             save_mapping_entry(
                 course.mot_cle,
@@ -966,6 +1209,14 @@ def create_drive_view():
                 contenance_paquet=contenance,
                 unite_paquet=unite,
             )
+            saved += 1
+        logger.info(
+            "%s mapping %s | %d entrée(s) écrite(s) | %d ignorée(s)",
+            _LOG_TABLE,
+            platform,
+            saved,
+            skipped,
+        )
 
     async def _open_validation_dialog(
         report: DriveValidationReport,
@@ -1001,18 +1252,26 @@ def create_drive_view():
         *,
         confirm_label: str,
     ) -> DriveValidationReport | None:
+        logger.info("%s validation demandée", _LOG_TABLE)
         await _flush_table_to_state()
+        _log_table_fill_stats("avant validation")
         report = _build_validation_report()
+        _log_validation_report(report, context="rapport validation")
         if report.orderable_count == 0:
+            logger.warning("%s validation refusée — aucun article commandable", _LOG_TABLE)
             ui.notify("Aucun article commandable dans la liste de courses.", type="warning")
             return None
         if not await _open_validation_dialog(report, confirm_label=confirm_label):
+            logger.info("%s validation annulée par l'utilisateur", _LOG_TABLE)
             return None
         _persist_mappings_from_row_data()
         _schedule_save()
-        return _build_validation_report()
+        final = _build_validation_report()
+        _log_validation_report(final, context="après commit validation")
+        return final
 
     def _update_row_url(mot_cle: str, url: str) -> None:
+        logger.info("%s apprentissage robot | %r → %s", _LOG_TABLE, mot_cle, url[:80] if url else "(vide)")
         for row_id, row_data in state.get("row_data", {}).items():
             course: CourseItem = row_data["course"]
             if course.mot_cle == mot_cle:
@@ -1039,6 +1298,9 @@ def create_drive_view():
                         unite=unite,
                         actif=True,
                     )
+                _refresh_row_commande(row_id)
+                _log_table_fill_stats(f"après apprentissage {mot_cle!r}")
+                break
 
     def _set_start_enabled(enabled: bool) -> None:
         start_courses_btn.enable() if enabled else start_courses_btn.disable()
@@ -1120,7 +1382,8 @@ def create_drive_view():
                 <q-input v-if="!props.row._section" dense outlined type="text" inputmode="decimal"
                     style="width:76px;font-size:12px"
                     :model-value="props.row.contenance"
-                    @update:model-value="v => { props.row.contenance = v }" />
+                    @update:model-value="v => { props.row.contenance = v }"
+                    @blur="$parent.$emit('driveRowUpdate', { id: props.row.id, field: 'contenance', value: props.row.contenance })" />
             </q-td>
             """,
         )
@@ -1132,7 +1395,7 @@ def create_drive_view():
                     style="width:68px;font-size:12px"
                     :options="[{label:'—',value:''},{label:'g',value:'g'},{label:'kg',value:'kg'},{label:'ml',value:'ml'},{label:'L',value:'L'},{label:'u',value:'u'}]"
                     :model-value="props.row.unite"
-                    @update:model-value="v => { props.row.unite = v }" />
+                    @update:model-value="v => { props.row.unite = v; $parent.$emit('driveRowUpdate', { id: props.row.id, field: 'unite', value: v }) }" />
             </q-td>
             """,
         )
@@ -1140,7 +1403,10 @@ def create_drive_view():
             "body-cell-commande",
             r"""
             <q-td :props="props" auto-width class="text-center">
-                <span v-if="!props.row._section" class="trankil-drive-commande-badge text-grey-6">{{ props.row.commande }}</span>
+                <span v-if="!props.row._section"
+                    :class="props.row.commande === '—' ? 'trankil-drive-commande-badge text-grey-6' : 'trankil-drive-commande-badge text-weight-medium text-primary'">
+                    {{ props.row.commande }}
+                </span>
             </q-td>
             """,
         )
@@ -1153,7 +1419,8 @@ def create_drive_view():
                     style="font-size:12px;min-width:140px"
                     :class="!props.row.url ? 'trankil-drive-url-missing' : ''"
                     :model-value="props.row.url"
-                    @update:model-value="v => { props.row.url = v }" />
+                    @update:model-value="v => { props.row.url = v }"
+                    @blur="$parent.$emit('driveRowUpdate', { id: props.row.id, field: 'url', value: props.row.url })" />
             </q-td>
             """,
         )
@@ -1304,6 +1571,7 @@ def create_drive_view():
                     )
                     _configure_drive_table(table)
                     state["table"] = table
+                    _log_table_fill_stats("show_results initial")
                     _log_table_snapshot("show_results initial", platform=platform)
 
         _schedule_save()
